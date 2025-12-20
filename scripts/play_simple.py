@@ -9,10 +9,11 @@ GAMEPLAY MODES (constrain AI behavior):
   --mode none      : No restrictions (default)
 
 LIVE HOTKEYS (press while running):
-  F1 = DRIVING mode    F5 = Toggle SOUTH (A)
-  F2 = COMBAT mode     F6 = Toggle NORTH (Y)
-  F3 = EXPLORE mode    F7 = Toggle RIGHT_TRIGGER
-  F4 = NONE mode       F8 = Toggle LEFT_TRIGGER
+  ALT+F1 = DRIVING mode    ALT+F5 = Toggle SOUTH (A)
+  ALT+F2 = COMBAT mode     ALT+F6 = Toggle NORTH (Y)
+  ALT+F3 = EXPLORE mode    ALT+F7 = Toggle RIGHT_TRIGGER
+  ALT+F4 = NONE mode       ALT+F8 = Toggle LEFT_TRIGGER
+  ALT+F9 = Toggle joystick sensitivity (50% / 100%)
 """
 import os
 import sys
@@ -57,6 +58,63 @@ GAMEPLAY_MODES = {
 current_mode = "none"
 blocked_buttons = set()
 mode_lock = threading.Lock()
+joystick_scale = 1.0  # 1.0 = full, 0.5 = half sensitivity
+
+# Overlay window for showing current mode
+overlay_window = None
+overlay_label = None
+
+def toggle_joystick_scale():
+    global joystick_scale
+    joystick_scale = 0.5 if joystick_scale == 1.0 else 1.0
+    print(f">>> JOYSTICK SCALE: {int(joystick_scale * 100)}%")
+    update_overlay()
+
+def create_overlay():
+    """Create a small always-on-top overlay showing current mode"""
+    global overlay_window, overlay_label
+    try:
+        import tkinter as tk
+        overlay_window = tk.Tk()
+        overlay_window.title("AI Mode")
+        overlay_window.attributes("-topmost", True)
+        overlay_window.attributes("-alpha", 0.85)
+        overlay_window.overrideredirect(True)  # No window border
+        overlay_window.geometry("200x40+10+10")  # Size and position
+        overlay_window.configure(bg="black")
+        overlay_label = tk.Label(
+            overlay_window, 
+            text="MODE: NONE", 
+            font=("Consolas", 14, "bold"),
+            fg="lime",
+            bg="black"
+        )
+        overlay_label.pack(expand=True, fill="both")
+        overlay_window.update()
+    except Exception as e:
+        print(f"Overlay disabled: {e}")
+        overlay_window = None
+
+def update_overlay():
+    """Update the overlay with current mode"""
+    global overlay_window, overlay_label
+    if overlay_window and overlay_label:
+        try:
+            mode_colors = {"none": "gray", "driving": "cyan", "combat": "red", "explore": "yellow"}
+            color = mode_colors.get(current_mode, "lime")
+            scale_text = "" if joystick_scale == 1.0 else " [50%]"
+            overlay_label.config(text=f"MODE: {current_mode.upper()}{scale_text}", fg=color)
+            overlay_window.update()
+        except:
+            pass
+
+def destroy_overlay():
+    global overlay_window
+    if overlay_window:
+        try:
+            overlay_window.destroy()
+        except:
+            pass
 
 def set_mode(mode_name):
     global current_mode, blocked_buttons
@@ -65,6 +123,7 @@ def set_mode(mode_name):
             current_mode = mode_name
             blocked_buttons = set(GAMEPLAY_MODES[mode_name])
             print(f">>> MODE: {mode_name.upper()} | Blocked: {list(blocked_buttons) or 'none'}")
+            update_overlay()
 
 def toggle_button(btn_name):
     global blocked_buttons
@@ -79,15 +138,18 @@ def toggle_button(btn_name):
 def setup_hotkeys():
     if not KEYBOARD_AVAILABLE:
         return
-    keyboard.add_hotkey("f1", lambda: set_mode("driving"))
-    keyboard.add_hotkey("f2", lambda: set_mode("combat"))
-    keyboard.add_hotkey("f3", lambda: set_mode("explore"))
-    keyboard.add_hotkey("f4", lambda: set_mode("none"))
-    keyboard.add_hotkey("f5", lambda: toggle_button("SOUTH"))
-    keyboard.add_hotkey("f6", lambda: toggle_button("NORTH"))
-    keyboard.add_hotkey("f7", lambda: toggle_button("RIGHT_TRIGGER"))
-    keyboard.add_hotkey("f8", lambda: toggle_button("LEFT_TRIGGER"))
-    print("Hotkeys: F1=Driving F2=Combat F3=Explore F4=None | F5-F8=Toggle buttons")
+    # ALT+F combinations for mode switching
+    keyboard.add_hotkey("alt+f1", lambda: set_mode("driving"))
+    keyboard.add_hotkey("alt+f2", lambda: set_mode("combat"))
+    keyboard.add_hotkey("alt+f3", lambda: set_mode("explore"))
+    keyboard.add_hotkey("alt+f4", lambda: set_mode("none"))  # Note: may conflict with Windows
+    keyboard.add_hotkey("alt+f5", lambda: toggle_button("SOUTH"))
+    keyboard.add_hotkey("alt+f6", lambda: toggle_button("NORTH"))
+    keyboard.add_hotkey("alt+f7", lambda: toggle_button("RIGHT_TRIGGER"))
+    keyboard.add_hotkey("alt+f8", lambda: toggle_button("LEFT_TRIGGER"))
+    keyboard.add_hotkey("alt+f9", lambda: toggle_joystick_scale())
+    print("Hotkeys: ALT+F1=Driving ALT+F2=Combat ALT+F3=Explore ALT+F4=None")
+    print("         ALT+F5-F8=Toggle buttons | ALT+F9=Toggle joystick sensitivity")
 
 
 def find_game_window(process_name):
@@ -147,7 +209,8 @@ parser.add_argument("--mode", type=str, default="none", choices=["none", "drivin
                     help="Gameplay mode: none, driving, combat, explore")
 args = parser.parse_args()
 
-# Initialize gameplay mode
+# Initialize gameplay mode and overlay
+create_overlay()
 set_mode(args.mode)
 setup_hotkeys()
 
@@ -217,8 +280,10 @@ def apply_action(j_left, j_right, buttons):
     gamepad.reset()
 
     # Set joysticks (values are in [-1, 1], scale to [-32768, 32767])
-    gamepad.left_joystick(x_value=int(j_left[0] * 32767), y_value=int(-j_left[1] * 32767))
-    gamepad.right_joystick(x_value=int(j_right[0] * 32767), y_value=int(-j_right[1] * 32767))
+    # Apply joystick_scale for sensitivity adjustment
+    scale = joystick_scale
+    gamepad.left_joystick(x_value=int(j_left[0] * 32767 * scale), y_value=int(-j_left[1] * 32767 * scale))
+    gamepad.right_joystick(x_value=int(j_right[0] * 32767 * scale), y_value=int(-j_right[1] * 32767 * scale))
 
     # Set buttons - unrolled for speed
     # Triggers (indices based on TOKEN_SET order) - respect blocked buttons
