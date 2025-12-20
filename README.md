@@ -38,9 +38,14 @@ This project is actively evolving:
 | 16 timesteps (default) | ~450ms | ~2 FPS | Too slow |
 | 8 timesteps | ~265ms | ~4 FPS | Sluggish |
 | 4 timesteps | ~160ms | ~6 FPS | Playable for slow games |
-| **2 timesteps** | ~85ms | **~11-12 FPS** | **Best balance** |
+| **2 timesteps** | 62-85ms | **~12-15 FPS** | **Best balance** |
 
-**Conclusion**: An RTX 3070 can run NitroGen at ~11 FPS with 2 timesteps. Sufficient for slower-paced games.
+**Observed Performance** (Cyberpunk 2077 testing):
+- **Peak**: 15.4 FPS (62ms inference)
+- **Average**: 11-14 FPS (70-90ms inference)
+- **Minimum**: ~8 FPS under heavy GPU load
+
+**Conclusion**: An RTX 3070 can run NitroGen at 12-15 FPS with 2 timesteps. Further optimization may be possible. Sufficient for slower-paced and turn-based games.
 
 ---
 
