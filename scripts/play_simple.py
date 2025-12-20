@@ -1,6 +1,18 @@
 """
 Simplified NitroGen play script - No DLL injection
 Works with games that don't support speedhack (like Cyberpunk 2077)
+
+GAMEPLAY MODES (constrain AI behavior):
+  --mode driving   : Blocks exit vehicle, weapon buttons
+  --mode combat    : Blocks menu/pause buttons  
+  --mode explore   : Blocks shooting/combat buttons
+  --mode none      : No restrictions (default)
+
+LIVE HOTKEYS (press while running):
+  F1 = DRIVING mode    F5 = Toggle SOUTH (A)
+  F2 = COMBAT mode     F6 = Toggle NORTH (Y)
+  F3 = EXPLORE mode    F7 = Toggle RIGHT_TRIGGER
+  F4 = NONE mode       F8 = Toggle LEFT_TRIGGER
 """
 import os
 import sys
@@ -8,6 +20,7 @@ import time
 import json
 import argparse
 import pickle
+import threading
 from pathlib import Path
 from collections import OrderedDict
 
@@ -20,8 +33,61 @@ import zmq
 import pygetwindow as gw
 import psutil
 
+try:
+    import keyboard
+    KEYBOARD_AVAILABLE = True
+except ImportError:
+    KEYBOARD_AVAILABLE = False
+    print("Note: Install 'keyboard' for live hotkeys: pip install keyboard")
+
 from nitrogen.inference_client import ModelClient
 from nitrogen.shared import BUTTON_ACTION_TOKENS, PATH_REPO
+
+# =============================================================================
+# GAMEPLAY MODES - Block certain buttons to constrain AI behavior
+# =============================================================================
+GAMEPLAY_MODES = {
+    "none": [],
+    "driving": ["SOUTH", "NORTH", "WEST", "RIGHT_SHOULDER"],  # No exit, no combat
+    "combat": ["BACK", "START"],  # No menus
+    "explore": ["RIGHT_TRIGGER", "LEFT_TRIGGER", "RIGHT_SHOULDER"],  # No shooting
+}
+
+# Global state for live mode switching
+current_mode = "none"
+blocked_buttons = set()
+mode_lock = threading.Lock()
+
+def set_mode(mode_name):
+    global current_mode, blocked_buttons
+    with mode_lock:
+        if mode_name in GAMEPLAY_MODES:
+            current_mode = mode_name
+            blocked_buttons = set(GAMEPLAY_MODES[mode_name])
+            print(f">>> MODE: {mode_name.upper()} | Blocked: {list(blocked_buttons) or 'none'}")
+
+def toggle_button(btn_name):
+    global blocked_buttons
+    with mode_lock:
+        if btn_name in blocked_buttons:
+            blocked_buttons.remove(btn_name)
+            print(f">>> UNBLOCKED: {btn_name}")
+        else:
+            blocked_buttons.add(btn_name)
+            print(f">>> BLOCKED: {btn_name}")
+
+def setup_hotkeys():
+    if not KEYBOARD_AVAILABLE:
+        return
+    keyboard.add_hotkey("f1", lambda: set_mode("driving"))
+    keyboard.add_hotkey("f2", lambda: set_mode("combat"))
+    keyboard.add_hotkey("f3", lambda: set_mode("explore"))
+    keyboard.add_hotkey("f4", lambda: set_mode("none"))
+    keyboard.add_hotkey("f5", lambda: toggle_button("SOUTH"))
+    keyboard.add_hotkey("f6", lambda: toggle_button("NORTH"))
+    keyboard.add_hotkey("f7", lambda: toggle_button("RIGHT_TRIGGER"))
+    keyboard.add_hotkey("f8", lambda: toggle_button("LEFT_TRIGGER"))
+    print("Hotkeys: F1=Driving F2=Combat F3=Explore F4=None | F5-F8=Toggle buttons")
 
 
 def find_game_window(process_name):
@@ -77,7 +143,13 @@ parser.add_argument("--process", type=str, required=True, help="Game process nam
 parser.add_argument("--port", type=int, default=5555, help="Model server port")
 parser.add_argument("--monitor-port", type=int, default=5556, help="Monitor publish port")
 parser.add_argument("--fps", type=int, default=15, help="Target FPS for AI decisions")
+parser.add_argument("--mode", type=str, default="none", choices=["none", "driving", "combat", "explore"],
+                    help="Gameplay mode: none, driving, combat, explore")
 args = parser.parse_args()
+
+# Initialize gameplay mode
+set_mode(args.mode)
+setup_hotkeys()
 
 # Setup ZeroMQ publisher for monitoring
 print("Setting up monitor publisher on port", args.monitor_port)
@@ -149,17 +221,23 @@ def apply_action(j_left, j_right, buttons):
     gamepad.right_joystick(x_value=int(j_right[0] * 32767), y_value=int(-j_right[1] * 32767))
 
     # Set buttons - unrolled for speed
-    # Triggers (indices based on TOKEN_SET order)
+    # Triggers (indices based on TOKEN_SET order) - respect blocked buttons
+    with mode_lock:
+        current_blocked = blocked_buttons.copy()
     lt_idx = TOKEN_SET.index("LEFT_TRIGGER") if "LEFT_TRIGGER" in TOKEN_SET else -1
     rt_idx = TOKEN_SET.index("RIGHT_TRIGGER") if "RIGHT_TRIGGER" in TOKEN_SET else -1
-    if lt_idx >= 0:
+    if lt_idx >= 0 and "LEFT_TRIGGER" not in current_blocked:
         gamepad.left_trigger(value=int(buttons[lt_idx] * 255))
-    if rt_idx >= 0:
+    if rt_idx >= 0 and "RIGHT_TRIGGER" not in current_blocked:
         gamepad.right_trigger(value=int(buttons[rt_idx] * 255))
 
-    # Regular buttons
+    # Regular buttons (check blocked_buttons for gameplay mode restrictions)
+    with mode_lock:
+        current_blocked = blocked_buttons.copy()
     for i, (name, value) in enumerate(zip(TOKEN_SET, buttons)):
         if name in ["START", "BACK", "GUIDE", "LEFT_TRIGGER", "RIGHT_TRIGGER"]:
+            continue
+        if name in current_blocked:  # Skip blocked buttons
             continue
         if value > BUTTON_PRESS_THRES and name in BUTTON_MAP:
             gamepad.press_button(button=BUTTON_MAP[name])
