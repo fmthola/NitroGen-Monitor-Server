@@ -65,7 +65,10 @@ This project is actively evolving:
 |-----------|-------------|
 | scripts/serve.py | Optimized inference server with configurable timesteps |
 | scripts/play_simple.py | Game controller without DLL injection (anti-cheat safe) |
+| scripts/play_interactive.py | Human-in-the-loop mode with correction recording |
+| scripts/train_dagger.py | DAgger training on human corrections |
 | scripts/monitor.py | Real-time dashboard showing AI vision and decisions |
+| scripts/record_training_data.py | Record gameplay for training |
 | setup.ps1 | Automated setup script with environment validation |
 | run.ps1 | Easy-to-use launcher script |
 
@@ -211,6 +214,47 @@ This project is built upon NVIDIA NitroGen:
 ## License
 
 This project builds upon NVIDIA NitroGen. See the [original repository](https://github.com/MineDojo/NitroGen) for license details.
+
+---
+
+## Interactive Mode & DAgger Training
+
+This repository includes a **human-in-the-loop** training system. Correct the AI in real-time, and those corrections fine-tune the model.
+
+### How It Works
+
+
+
+### Step 1: Play with AI + Provide Corrections
+
+    python scripts/play_interactive.py --process "YourGame.exe"
+
+- AI plays normally
+- Touch your controller to override
+- Corrections saved automatically
+
+**Hotkeys:** ALT+F1=AI only, ALT+F2=Human only, ALT+F3=Auto mode
+
+### Step 2: Train on Corrections
+
+    python scripts/train_dagger.py --corrections ./corrections --epochs 5
+
+Outputs detailed analysis:
+- What actions AI got wrong most often
+- Which buttons needed most correction
+- Joystick direction errors
+- Training loss curves
+
+### Step 3: Test Improved Model
+
+    python scripts/serve.py models/ng_dagger.pt --timesteps 2
+    python scripts/play_simple.py --process "YourGame.exe"
+
+---
+
+## Training Documentation
+
+See [TRAINING_PLAN.md](TRAINING_PLAN.md) for comprehensive fine-tuning guide.
 
 ---
 
