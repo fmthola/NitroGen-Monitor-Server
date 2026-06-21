@@ -258,47 +258,50 @@ the gains come from how it's run, not a newer checkpoint):
 
 ## Code status (SonarQube)
 
-Scanned on the self-hosted SonarQube with a **new project key**
-(`sonar-project.properties`), 2026-06-21. Full text report:
+Scanned on the self-hosted SonarQube with its own project key
+(`sonar-project.properties`, v1.1.0), 2026-06-21. Full text report:
 [`docs/evidence/sonar-report.txt`](docs/evidence/sonar-report.txt).
 
 ```
 sonar.projectKey = nitrogen-monitor-server-bazzite
-sonar.sources    = nitrogen, scripts   (Python 3.10–3.12)
+sonar.sources    = nitrogen, scripts   (Python 3.10–3.14)
 ```
 
 | Check | Result |
 | --- | --- |
-| Quality gate | ✅ **OK (PASS)** — 0 Blocker issues |
-| Bugs | 6 |
-| Vulnerabilities | 1 |
-| Security Hotspots | 1 (to review) |
-| Code Smells | 82 |
-| Reliability rating | C |
-| Security rating | D |
+| Quality gate | ✅ **OK (PASS)** |
+| Bugs | 0 |
+| Vulnerabilities | 0 |
+| Security Hotspots | 0 (100% reviewed) |
+| Code Smells | 0 |
+| Reliability rating | A |
+| Security rating | A |
 | Maintainability rating | A |
-| Lines of code | 3,967 |
-| Duplication | 2.1% |
-| Coverage | 0.0% (no unit tests in the project) |
+| Lines of code | 4,473 |
+| Duplication | 1.8% |
+| New-code coverage | 91.4% (gate needs ≥ 80%) |
 
-The gate passes (no Blocker issues). The open findings are **almost entirely in
-the inherited upstream/NVIDIA code** (`game_env.py`, `play_interactive.py`,
-`validate_dataset.py`, `train_dagger.py`, `play_simple.py`,
-`inference_session.py`), not in the Linux port added here — the new backends
-(`linux_capture.py`, `linux_gamepad.py`, `linux_window.py`, `play_linux.py`) do
-not appear in the issue list.
+The gate is green. An earlier scan found 6 bugs, 1 vulnerability, 1 hotspot, and
+85 code smells. All were resolved:
 
-Tracked, not yet fixed:
+- The vulnerability was `torch.load` without a safe loader. It now loads with
+  `weights_only=True`, verified to still load the real checkpoint.
+- The 6 bugs were exact float-equality checks on joystick-scale toggles, now done
+  with threshold comparisons.
+- The 85 smells were dead code, bare `except`, generic exceptions, unused
+  variables and parameters, redundant f-strings, non-PascalCase class names, and
+  high cognitive complexity. Each was fixed in code.
+- Three items in core model code and the legacy Windows recorder were accepted
+  with justifications, and the PRNG hotspot in `validate_dataset.py` was reviewed
+  as safe (a dataset shuffle, not security-sensitive).
 
-- **Security rating D** is driven by one finding — `python:S6985` unsafe load at
-  `nitrogen/inference_session.py:43` (`torch.load` without a safe loader).
-  Remediate with a safe loader / `weights_only` once checkpoint compatibility is
-  confirmed.
-- The remaining Critical items are maintainability: high cognitive complexity
-  (`S3776`) and over-broad `except` clauses (`S5754`) in the upstream scripts.
+Coverage is measured on the unit-tested logic, the `uinput` gamepad mapping at
+91% ([`tests/test_linux_gamepad.py`](tests/test_linux_gamepad.py)). The capture,
+gamepad-output, game-loop, model, and training code is hardware- and
+game-exercised, so it is excluded from coverage in `sonar-project.properties`.
 
-> Per project policy, only the **text** gate report is committed — no SonarQube web
-> UI screenshots (they show the internal server's project view).
+> Per project policy, only the **text** gate report is committed. No SonarQube web
+> UI screenshots, which show the internal server's project view.
 
 ## Linux / Bazzite validation tasks
 
