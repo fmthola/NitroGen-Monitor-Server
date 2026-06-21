@@ -11,18 +11,8 @@ from pathlib import Path
 import polars as pl
 
 
-def validate_dataset(parquet_path: str):
-    """Validate the training dataset."""
-    print(f"Validating: {parquet_path}")
-    print("=" * 50)
-
-    try:
-        df = pl.read_parquet(parquet_path)
-    except Exception as e:
-        print(f"ERROR: Could not read dataset: {e}")
-        return False
-
-    # Basic statistics
+def _print_statistics(df):
+    """Print basic dataset statistics."""
     print("\n[Dataset Statistics]")
     print(f"  Total frames: {len(df):,}")
     print(f"  Columns: {df.columns}")
@@ -39,7 +29,9 @@ def validate_dataset(parquet_path: str):
     duration_minutes = len(df) / fps / 60
     print(f"  Estimated duration: {duration_minutes:.1f} minutes ({duration_minutes/60:.1f} hours)")
 
-    # Check frame existence
+
+def _validate_frames(df):
+    """Check that a sample of referenced frame files exist on disk."""
     print("\n[Frame Validation]")
     if "frame_path" in df.columns:
         sample_size = min(100, len(df))
@@ -59,10 +51,9 @@ def validate_dataset(parquet_path: str):
     else:
         print("  WARNING: No 'frame_path' column found!")
 
-    # Action statistics
-    print("\n[Action Distribution]")
 
-    # Joystick analysis
+def _analyze_joystick(df):
+    """Print mean left-joystick values."""
     if "j_left" in df.columns:
         # Note: j_left is stored as a list [x, y]
         try:
@@ -72,10 +63,12 @@ def validate_dataset(parquet_path: str):
                 y_vals = [v[1] for v in j_left_vals if v]
                 print(f"  Left Joystick X: mean={sum(x_vals)/len(x_vals):.3f}")
                 print(f"  Left Joystick Y: mean={sum(y_vals)/len(y_vals):.3f}")
-        except:
+        except Exception:
             print("  Could not analyze joystick data")
 
-    # Button analysis
+
+def _analyze_buttons(df):
+    """Print the fraction of frames each button is pressed."""
     button_cols = ["south", "east", "west", "north", "left_shoulder", "right_shoulder",
                    "left_trigger", "right_trigger", "dpad_up", "dpad_down", "dpad_left", "dpad_right"]
 
@@ -85,10 +78,12 @@ def validate_dataset(parquet_path: str):
                 mean = df[col].mean()
                 if mean is not None:
                     print(f"  {col}: {mean:.2%} pressed")
-            except:
+            except Exception:
                 pass
 
-    # Quality checks
+
+def _quality_checks(df):
+    """Run dataset quality checks."""
     print("\n[Quality Checks]")
 
     # Check for duplicate frames
@@ -103,6 +98,28 @@ def validate_dataset(parquet_path: str):
     if "j_left" in df.columns and "j_right" in df.columns:
         # This is a simplified check
         print("  (Joystick movement analysis requires manual review)")
+
+
+def validate_dataset(parquet_path: str):
+    """Validate the training dataset."""
+    print(f"Validating: {parquet_path}")
+    print("=" * 50)
+
+    try:
+        df = pl.read_parquet(parquet_path)
+    except Exception as e:
+        print(f"ERROR: Could not read dataset: {e}")
+        return False
+
+    _print_statistics(df)
+    _validate_frames(df)
+
+    # Action statistics
+    print("\n[Action Distribution]")
+    _analyze_joystick(df)
+    _analyze_buttons(df)
+
+    _quality_checks(df)
 
     print("\n" + "=" * 50)
     print("Validation complete!")

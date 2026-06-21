@@ -75,7 +75,7 @@ def get_game_mapping(cfg: GameMappingConfig) -> dict:
             if game == _UNCONDITIONAL_ID:
                 continue
             game_set.add(game)
-    games = sorted(list(game_set))
+    games = sorted(game_set)
 
     # Set the 0th element to be the unconditional game ID
     games = [_UNCONDITIONAL_ID] + games

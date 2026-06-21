@@ -13,3 +13,7 @@ out/
 # DAgger correction recordings (gameplay data, can be large)
 corrections/
 corrections_test/
+
+# Coverage artifacts (regenerated)
+coverage.xml
+.coverage

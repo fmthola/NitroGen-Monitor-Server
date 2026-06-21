@@ -48,7 +48,7 @@ class _MssCamera:
                 self._local.monitor = sct.monitors[1]
         return sct
 
-    def start(self, target_fps=60, video_mode=True):
+    def start(self, *args, **kwargs):
         # dxcam spins up a capture thread here; mss grabs on demand, so this only
         # warms the per-thread grabber. Flags kept for call-site compatibility.
         self._sct()

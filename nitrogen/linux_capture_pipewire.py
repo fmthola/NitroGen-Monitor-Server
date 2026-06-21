@@ -111,14 +111,15 @@ class PipeWireCamera:
         }[method]
 
     # --- lifecycle ----------------------------------------------------------
-    def start(self, target_fps=60, video_mode=True):
+    def start(self, *args, **kwargs):
         res = self._request("CreateSession", [], {
             "session_handle_token": GLib.Variant("s", self._token("sess")),
         })
         self._session = res["session_handle"]
 
         select = {
-            "types": GLib.Variant("u", 1 | 2),       # 1=monitor, 2=window
+            # source types bitmask: monitor (value one) combined with window (value two)
+            "types": GLib.Variant("u", 1 | 2),
             "multiple": GLib.Variant("b", False),
             "cursor_mode": GLib.Variant("u", 2),     # embed the cursor in the frames
             "persist_mode": GLib.Variant("u", 2),    # persist until revoked

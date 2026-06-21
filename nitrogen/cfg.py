@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from nitrogen.flow_matching_transformer.nitrogen import NitroGen_Config
+from nitrogen.flow_matching_transformer.nitrogen import NitroGenConfig
 from nitrogen.mm_tokenizers import NitrogenTokenizerConfig
 
 class ModalityConfig(BaseModel):
@@ -21,6 +21,6 @@ class ModalityConfig(BaseModel):
 class CkptConfig(BaseModel):
     experiment_name: str = Field(..., description="Name of the experiment")
 
-    model_cfg: NitroGen_Config = Field(..., description="Model configuration. This is a placeholder and should be replaced with the actual model config class.")
+    model_cfg: NitroGenConfig = Field(..., description="Model configuration. This is a placeholder and should be replaced with the actual model config class.")
     tokenizer_cfg: NitrogenTokenizerConfig = Field(..., description="Tokenizer configuration. This is a placeholder and should be replaced with the actual tokenizer config class.")
     modality_cfg: ModalityConfig = Field(..., description="Modality configuration for the dataset mixture.")

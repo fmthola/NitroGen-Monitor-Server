@@ -110,6 +110,40 @@ class PhysicalController:
         print(f"  Axes: {self.joystick.get_numaxes()}")
         print(f"  Buttons: {self.joystick.get_numbuttons()}")
 
+    def _read_buttons(self, left_trigger, right_trigger):
+        """Read the digital button/d-pad/trigger states into a dict."""
+        buttons = {}
+        button_map = [
+            'south', 'east', 'west', 'north',
+            'left_shoulder', 'right_shoulder',
+            'back', 'start', 'left_thumb', 'right_thumb', 'guide'
+        ]
+        for i, name in enumerate(button_map):
+            if i < self.joystick.get_numbuttons():
+                buttons[name] = self.joystick.get_button(i)
+            else:
+                buttons[name] = 0
+
+        buttons.update(self._read_dpad())
+
+        # Add triggers as buttons
+        buttons['left_trigger'] = 1 if left_trigger > 0.5 else 0
+        buttons['right_trigger'] = 1 if right_trigger > 0.5 else 0
+        return buttons
+
+    def _read_dpad(self):
+        """Read the hat/d-pad into the four directional button flags."""
+        if self.joystick.get_numhats() > 0:
+            hx, hy = self.joystick.get_hat(0)
+        else:
+            hx = hy = 0
+        return {
+            'dpad_left': 1 if hx < 0 else 0,
+            'dpad_right': 1 if hx > 0 else 0,
+            'dpad_down': 1 if hy < 0 else 0,
+            'dpad_up': 1 if hy > 0 else 0,
+        }
+
     def get_state(self):
         """Get current controller state."""
         pygame.event.pump()
@@ -128,33 +162,7 @@ class PhysicalController:
         left_trigger = (self.joystick.get_axis(4) + 1) / 2 if self.joystick.get_numaxes() > 4 else 0
         right_trigger = (self.joystick.get_axis(5) + 1) / 2 if self.joystick.get_numaxes() > 5 else 0
 
-        # Buttons
-        buttons = {}
-        button_map = [
-            'south', 'east', 'west', 'north',
-            'left_shoulder', 'right_shoulder',
-            'back', 'start', 'left_thumb', 'right_thumb', 'guide'
-        ]
-        for i, name in enumerate(button_map):
-            if i < self.joystick.get_numbuttons():
-                buttons[name] = self.joystick.get_button(i)
-            else:
-                buttons[name] = 0
-
-        # D-pad
-        if self.joystick.get_numhats() > 0:
-            hat = self.joystick.get_hat(0)
-            buttons['dpad_left'] = 1 if hat[0] < 0 else 0
-            buttons['dpad_right'] = 1 if hat[0] > 0 else 0
-            buttons['dpad_down'] = 1 if hat[1] < 0 else 0
-            buttons['dpad_up'] = 1 if hat[1] > 0 else 0
-        else:
-            buttons['dpad_left'] = buttons['dpad_right'] = 0
-            buttons['dpad_down'] = buttons['dpad_up'] = 0
-
-        # Add triggers as buttons
-        buttons['left_trigger'] = 1 if left_trigger > 0.5 else 0
-        buttons['right_trigger'] = 1 if right_trigger > 0.5 else 0
+        buttons = self._read_buttons(left_trigger, right_trigger)
 
         return {
             'j_left': j_left,
@@ -229,7 +237,7 @@ def update_overlay(controlling="AI", corrections=0):
             MODE_HUMAN: ("yellow", "HUMAN"),
         }
 
-        color, mode_text = mode_colors.get(current_mode, ("white", "???"))
+        _, mode_text = mode_colors.get(current_mode, ("white", "???"))
 
         # Controlling indicator
         if controlling == "HUMAN":
@@ -237,14 +245,14 @@ def update_overlay(controlling="AI", corrections=0):
         else:
             ctrl_color = "lime"
 
-        scale_text = "" if joystick_scale == 1.0 else " [50%]"
+        scale_text = "" if joystick_scale > 0.75 else " [50%]"
 
         # Build display text
         text = f"{mode_text} | {controlling}{scale_text}\nCorrections: {corrections}"
 
         overlay_label.config(text=text, fg=ctrl_color)
         overlay_window.update()
-    except:
+    except Exception:
         pass
 
 
@@ -253,7 +261,7 @@ def destroy_overlay():
     if overlay_window:
         try:
             overlay_window.destroy()
-        except:
+        except Exception:
             pass
 
 
@@ -269,7 +277,7 @@ def set_mode(mode):
 
 def toggle_joystick_scale():
     global joystick_scale
-    joystick_scale = 0.5 if joystick_scale == 1.0 else 1.0
+    joystick_scale = 0.5 if joystick_scale > 0.75 else 1.0
     print(f">>> JOYSTICK SCALE: {int(joystick_scale * 100)}%")
 
 
@@ -392,38 +400,44 @@ class CorrectionRecorder:
 # =============================================================================
 # GAME WINDOW DETECTION
 # =============================================================================
-def find_game_window(process_name):
-    """Find game window by process name."""
-    game_pid = None
+def _find_game_pid(process_name):
+    """Return the PID of the first process matching process_name, or None."""
     for proc in psutil.process_iter(['pid', 'name']):
         if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
-            game_pid = proc.info['pid']
-            break
+            return proc.info['pid']
+    return None
+
+
+def _match_game_window(windows, process_name):
+    """Pick the game window from the enumerated windows, or None."""
+    for window in windows:
+        game_base = process_name.lower().replace('.exe', '')
+        if game_base in window.title.lower():
+            print(f"Found window: '{window.title}'")
+            return window
+
+    for window in windows:
+        if window.visible and window.width > 640 and window.height > 480:
+            if any(x in window.title.lower() for x in ['cyberpunk', 'game', process_name.lower().replace('.exe', '')]):
+                return window
+
+    return None
+
+
+def find_game_window(process_name):
+    """Find game window by process name."""
+    game_pid = _find_game_pid(process_name)
 
     if not game_pid:
-        raise Exception(f"Process not found: {process_name}")
+        raise RuntimeError(f"Process not found: {process_name}")
 
     print(f"Found process: {process_name} (PID: {game_pid})")
 
     windows = gw.getAllWindows()
-    game_window = None
-
-    for window in windows:
-        game_base = process_name.lower().replace('.exe', '')
-        if game_base in window.title.lower():
-            game_window = window
-            print(f"Found window: '{window.title}'")
-            break
+    game_window = _match_game_window(windows, process_name)
 
     if not game_window:
-        for window in windows:
-            if window.visible and window.width > 640 and window.height > 480:
-                if any(x in window.title.lower() for x in ['cyberpunk', 'game', process_name.lower().replace('.exe', '')]):
-                    game_window = window
-                    break
-
-    if not game_window:
-        raise Exception(f"No window found for {process_name}")
+        raise RuntimeError(f"No window found for {process_name}")
 
     left, top = max(0, game_window.left), max(0, game_window.top)
     width, height = game_window.width, game_window.height
@@ -498,9 +512,8 @@ def apply_human_action(gamepad, human_state):
 
     # Buttons
     for btn_lower, btn_upper in BUTTON_NAME_MAP.items():
-        if human_state['buttons'].get(btn_lower, 0):
-            if btn_upper in BUTTON_MAP:
-                gamepad.press_button(button=BUTTON_MAP[btn_upper])
+        if human_state['buttons'].get(btn_lower, 0) and btn_upper in BUTTON_MAP:
+            gamepad.press_button(button=BUTTON_MAP[btn_upper])
 
     gamepad.update()
 
@@ -546,6 +559,52 @@ def preprocess_frame(frame):
         return None
     resized = cv2.resize(frame, (256, 256), interpolation=cv2.INTER_NEAREST)
     return Image.fromarray(resized)
+
+
+def _apply_mode_action(mode, gamepad, ai_action, human_state, human_active,
+                       obs, recorder, token_set, correction_count):
+    """Apply the action for the current mode and return (controlling, correction_count)."""
+    controlling = "AI"
+
+    if mode == MODE_AI:
+        # AI only, ignore human
+        controlling = "AI"
+        apply_ai_action(gamepad, ai_action["j_left"], ai_action["j_right"],
+                       ai_action["buttons"], token_set)
+
+    elif mode == MODE_HUMAN:
+        # Human only
+        controlling = "HUMAN"
+        if human_state:
+            apply_human_action(gamepad, human_state)
+
+            # Record as correction (human is always "correcting" in this mode)
+            human_action = {
+                "j_left": human_state["j_left"],
+                "j_right": human_state["j_right"],
+                "buttons": human_state["buttons"],
+            }
+            correction_count = recorder.record(obs, human_action, ai_action)
+
+    elif mode == MODE_AUTO:
+        # AI with human override
+        if human_active and human_state:
+            controlling = "HUMAN"
+            apply_human_action(gamepad, human_state)
+
+            # Record the correction!
+            human_action = {
+                "j_left": human_state["j_left"],
+                "j_right": human_state["j_right"],
+                "buttons": human_state["buttons"],
+            }
+            correction_count = recorder.record(obs, human_action, ai_action)
+        else:
+            controlling = "AI"
+            apply_ai_action(gamepad, ai_action["j_left"], ai_action["j_right"],
+                           ai_action["buttons"], token_set)
+
+    return controlling, correction_count
 
 
 # =============================================================================
@@ -668,43 +727,10 @@ def main():
             with mode_lock:
                 mode = current_mode
 
-            if mode == MODE_AI:
-                # AI only, ignore human
-                controlling = "AI"
-                apply_ai_action(gamepad, ai_action["j_left"], ai_action["j_right"],
-                               ai_action["buttons"], TOKEN_SET)
-
-            elif mode == MODE_HUMAN:
-                # Human only
-                controlling = "HUMAN"
-                if human_state:
-                    apply_human_action(gamepad, human_state)
-
-                    # Record as correction (human is always "correcting" in this mode)
-                    human_action = {
-                        "j_left": human_state["j_left"],
-                        "j_right": human_state["j_right"],
-                        "buttons": human_state["buttons"],
-                    }
-                    correction_count = recorder.record(obs, human_action, ai_action)
-
-            elif mode == MODE_AUTO:
-                # AI with human override
-                if human_active and human_state:
-                    controlling = "HUMAN"
-                    apply_human_action(gamepad, human_state)
-
-                    # Record the correction!
-                    human_action = {
-                        "j_left": human_state["j_left"],
-                        "j_right": human_state["j_right"],
-                        "buttons": human_state["buttons"],
-                    }
-                    correction_count = recorder.record(obs, human_action, ai_action)
-                else:
-                    controlling = "AI"
-                    apply_ai_action(gamepad, ai_action["j_left"], ai_action["j_right"],
-                                   ai_action["buttons"], TOKEN_SET)
+            controlling, correction_count = _apply_mode_action(
+                mode, gamepad, ai_action, human_state, human_active,
+                obs, recorder, TOKEN_SET, correction_count
+            )
 
             step_count += 1
 
@@ -737,7 +763,7 @@ def main():
         pygame.quit()
 
         print(f"\n{'='*60}")
-        print(f"Session complete!")
+        print("Session complete!")
         print(f"Total steps: {step_count}")
         print(f"Total corrections: {correction_count}")
         print(f"Corrections saved to: {recorder.output_dir}")

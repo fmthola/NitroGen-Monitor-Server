@@ -99,7 +99,7 @@ def _find_with_xlib(name):
     return best
 
 
-def find_game_window(process_name=None, window_name="Cyberpunk"):
+def find_game_window(window_name="Cyberpunk"):
     """Return (left, top, right, bottom) for the game window, or raise."""
     if shutil.which("xdotool"):
         box = _find_with_xdotool(window_name)

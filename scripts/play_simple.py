@@ -66,7 +66,7 @@ overlay_label = None
 
 def toggle_joystick_scale():
     global joystick_scale
-    joystick_scale = 0.5 if joystick_scale == 1.0 else 1.0
+    joystick_scale = 0.5 if joystick_scale > 0.75 else 1.0
     print(f">>> JOYSTICK SCALE: {int(joystick_scale * 100)}%")
     update_overlay()
 
@@ -102,10 +102,10 @@ def update_overlay():
         try:
             mode_colors = {"none": "gray", "driving": "cyan", "combat": "red", "explore": "yellow"}
             color = mode_colors.get(current_mode, "lime")
-            scale_text = "" if joystick_scale == 1.0 else " [50%]"
+            scale_text = "" if joystick_scale > 0.75 else " [50%]"
             overlay_label.config(text=f"MODE: {current_mode.upper()}{scale_text}", fg=color)
             overlay_window.update()
-        except:
+        except Exception:
             pass
 
 def destroy_overlay():
@@ -113,7 +113,7 @@ def destroy_overlay():
     if overlay_window:
         try:
             overlay_window.destroy()
-        except:
+        except Exception:
             pass
 
 def set_mode(mode_name):
@@ -152,42 +152,48 @@ def setup_hotkeys():
     print("         ALT+F5-F8=Toggle buttons | ALT+F9=Toggle joystick sensitivity")
 
 
+def _find_game_pid(process_name):
+    """Return the PID of the first process matching process_name, or None."""
+    for proc in psutil.process_iter(['pid', 'name']):
+        if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
+            return proc.info['pid']
+    return None
+
+
+def _match_game_window(windows, process_name):
+    """Pick the game window from the enumerated windows, or None."""
+    for window in windows:
+        # Check if window title contains game name (without .exe)
+        game_base = process_name.lower().replace('.exe', '')
+        if game_base in window.title.lower() or 'cyberpunk' in window.title.lower():
+            print(f"Found window: '{window.title}'")
+            return window
+
+    # Fallback: just find any visible window from the list
+    for window in windows:
+        if window.visible and window.width > 640 and window.height > 480:
+            if 'cyberpunk' in window.title.lower():
+                return window
+
+    return None
+
+
 def find_game_window(process_name):
     """Find the game window by process name and return its bounding box"""
     # Find the process
-    game_pid = None
-    for proc in psutil.process_iter(['pid', 'name']):
-        if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
-            game_pid = proc.info['pid']
-            break
+    game_pid = _find_game_pid(process_name)
 
     if not game_pid:
-        raise Exception(f"Process not found: {process_name}")
+        raise RuntimeError(f"Process not found: {process_name}")
 
     print(f"Found process: {process_name} (PID: {game_pid})")
 
     # Find the window - try multiple methods
     windows = gw.getAllWindows()
-    game_window = None
-
-    for window in windows:
-        # Check if window title contains game name (without .exe)
-        game_base = process_name.lower().replace('.exe', '')
-        if game_base in window.title.lower() or 'cyberpunk' in window.title.lower():
-            game_window = window
-            print(f"Found window: '{window.title}'")
-            break
+    game_window = _match_game_window(windows, process_name)
 
     if not game_window:
-        # Fallback: just find any visible window from the list
-        for window in windows:
-            if window.visible and window.width > 640 and window.height > 480:
-                if 'cyberpunk' in window.title.lower():
-                    game_window = window
-                    break
-
-    if not game_window:
-        raise Exception(f"No window found for {process_name}")
+        raise RuntimeError(f"No window found for {process_name}")
 
     # Get window region (left, top, width, height) for dxcam
     left, top = game_window.left, game_window.top
@@ -312,7 +318,7 @@ def apply_action(j_left, j_right, buttons):
 print(f"\n{'='*60}")
 print(f"Starting AI control for: {args.process}")
 print(f"Target FPS: {args.fps}")
-print(f"Press Ctrl+C to stop")
+print("Press Ctrl+C to stop")
 print(f"{'='*60}\n")
 
 # Countdown
@@ -376,7 +382,7 @@ try:
                 }
                 try:
                     monitor_socket.send(pickle.dumps(frame_msg), zmq.NOBLOCK)
-                except:
+                except Exception:
                     pass
 
                 # Send action message
@@ -393,7 +399,7 @@ try:
                 }
                 try:
                     monitor_socket.send(pickle.dumps(action_msg), zmq.NOBLOCK)
-                except:
+                except Exception:
                     pass
 
         step_count += 1

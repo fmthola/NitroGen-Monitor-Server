@@ -55,15 +55,8 @@ class CorrectionAnalyzer:
         }
         self.total_corrections = 0
 
-    def add_correction(self, human_action: dict, ai_action: dict):
-        """Record a single correction for analysis."""
-        self.total_corrections += 1
-        self.corrections.append({
-            'human': human_action,
-            'ai': ai_action
-        })
-
-        # Analyze joystick differences
+    def _record_joystick_diff(self, human_action: dict, ai_action: dict):
+        """Accumulate the per-axis human-vs-AI joystick differences."""
         h_jl = human_action.get('j_left', [0, 0])
         h_jr = human_action.get('j_right', [0, 0])
 
@@ -81,11 +74,9 @@ class CorrectionAnalyzer:
         self.joystick_errors['right_x'].append(h_jr[0] - a_jr[0])
         self.joystick_errors['right_y'].append(h_jr[1] - a_jr[1])
 
-        # Analyze button differences
-        h_buttons = human_action.get('buttons', {})
-        a_buttons = ai_action.get('buttons', {})
-
-        # Handle list-based AI buttons
+    @staticmethod
+    def _ai_buttons_to_dict(a_buttons):
+        """Convert a list/array of AI button values into a name->0/1 dict."""
         if isinstance(a_buttons, (list, np.ndarray)):
             button_names = [
                 "dpad_down", "dpad_left", "dpad_right", "dpad_up",
@@ -97,7 +88,13 @@ class CorrectionAnalyzer:
             for i, name in enumerate(button_names):
                 if i < len(a_buttons):
                     a_buttons_dict[name] = 1 if a_buttons[i] > 0.5 else 0
-            a_buttons = a_buttons_dict
+            return a_buttons_dict
+        return a_buttons
+
+    def _record_button_diff(self, human_action: dict, ai_action: dict):
+        """Accumulate missed presses and overcalls for each button."""
+        h_buttons = human_action.get('buttons', {})
+        a_buttons = self._ai_buttons_to_dict(ai_action.get('buttons', {}))
 
         for btn_name in set(list(h_buttons.keys()) + list(a_buttons.keys())):
             h_pressed = h_buttons.get(btn_name, 0)
@@ -107,6 +104,17 @@ class CorrectionAnalyzer:
                 self.button_errors[btn_name] += 1  # Human needed this, AI didn't press
             elif a_pressed and not h_pressed:
                 self.button_overcalls[btn_name] += 1  # AI pressed, human didn't want
+
+    def add_correction(self, human_action: dict, ai_action: dict):
+        """Record a single correction for analysis."""
+        self.total_corrections += 1
+        self.corrections.append({
+            'human': human_action,
+            'ai': ai_action
+        })
+
+        self._record_joystick_diff(human_action, ai_action)
+        self._record_button_diff(human_action, ai_action)
 
     def generate_report(self) -> dict:
         """Generate comprehensive analysis report."""
@@ -134,11 +142,18 @@ class CorrectionAnalyzer:
                 std_error = np.std(errors)
                 max_error = np.max(np.abs(errors))
 
+                if mean_error > 0.1:
+                    bias = "positive"
+                elif mean_error < -0.1:
+                    bias = "negative"
+                else:
+                    bias = "neutral"
+
                 report["joystick_analysis"][axis] = {
                     "mean_error": round(float(mean_error), 4),
                     "std_error": round(float(std_error), 4),
                     "max_error": round(float(max_error), 4),
-                    "bias": "positive" if mean_error > 0.1 else "negative" if mean_error < -0.1 else "neutral"
+                    "bias": bias
                 }
 
         # Button analysis
@@ -162,11 +177,10 @@ class CorrectionAnalyzer:
 
         return report
 
-    def _generate_insights(self, report: dict) -> list:
-        """Generate human-readable insights."""
+    @staticmethod
+    def _joystick_insights(report: dict) -> list:
+        """Build insights describing systematic joystick bias."""
         insights = []
-
-        # Joystick insights
         for axis, data in report["joystick_analysis"].items():
             if abs(data["mean_error"]) > 0.15:
                 direction = "right/up" if data["mean_error"] > 0 else "left/down"
@@ -176,8 +190,12 @@ class CorrectionAnalyzer:
                     f"AI tends to under-steer {stick} stick {coord}-axis. "
                     f"Human corrections push {direction} (avg: {data['mean_error']:+.2f})"
                 )
+        return insights
 
-        # Button insights
+    @staticmethod
+    def _button_insights(report: dict) -> list:
+        """Build insights describing missed and unwanted button presses."""
+        insights = []
         missed = report["button_analysis"]["missed_presses"]
         if missed:
             top_missed = list(missed.keys())[:3]
@@ -195,6 +213,13 @@ class CorrectionAnalyzer:
                     f"AI presses these too often: {', '.join(top_unwanted)}. "
                     f"Human rarely wants these in corrected frames."
                 )
+        return insights
+
+    def _generate_insights(self, report: dict) -> list:
+        """Generate human-readable insights."""
+        insights = []
+        insights.extend(self._joystick_insights(report))
+        insights.extend(self._button_insights(report))
 
         if not insights:
             insights.append("No major systematic errors detected. Corrections may be situational.")
@@ -294,6 +319,8 @@ class CorrectionDataset(Dataset):
                  frame_per_sample=1, action_horizon=16):
         self.img_proc = img_proc
         self.tokenizer = tokenizer
+        if tokenizer is not None:
+            tokenizer.training = True  # produce actions/has_real_action keys in encode()
         self.frame_per_sample = frame_per_sample
         self.action_horizon = action_horizon
         self.samples = []
@@ -333,14 +360,16 @@ class CorrectionDataset(Dataset):
         dropped = torch.ones(self.frame_per_sample, dtype=torch.bool)
         dropped[-1] = False
 
-        # action in model layout: [buttons(21), j_left(2), j_right(2)], joysticks [0,1].
-        buttons = human_buttons_to_vec(s["buttons"])
-        jl = [(s["j_left"][0] + 1) / 2.0, (s["j_left"][1] + 1) / 2.0]
-        jr = [(s["j_right"][0] + 1) / 2.0, (s["j_right"][1] + 1) / 2.0]
-        one = np.array(buttons + jl + jr, dtype=np.float32)
-        action = np.repeat(one[None, :], self.action_horizon, axis=0)  # (T, 25)
+        # The tokenizer packs buttons/j_left/j_right itself (it normalizes the
+        # joysticks and orders them as [buttons, j_left, j_right]). Provide each as
+        # (chunks=1, action_horizon, dims); joysticks stay raw in [-1, 1].
+        T = self.action_horizon
+        buttons = np.tile(np.array(human_buttons_to_vec(s["buttons"]), dtype=np.float32), (1, T, 1))
+        jl = np.tile(np.array(s["j_left"], dtype=np.float32), (1, T, 1))
+        jr = np.tile(np.array(s["j_right"], dtype=np.float32), (1, T, 1))
 
-        data = {"frames": frames, "dropped_frames": dropped, "action": action, "game": None}
+        data = {"frames": frames, "dropped_frames": dropped,
+                "buttons": buttons, "j_left": jl, "j_right": jr, "game": None}
         return self.tokenizer.encode(data)
 
 
@@ -487,6 +516,47 @@ def save_training_report(output_dir: Path, analysis_report: dict, training_summa
 # =============================================================================
 # MAIN
 # =============================================================================
+def _load_model_and_proc(checkpoint, device):
+    """Load the full model if possible, else fall back to a bare image processor.
+
+    Returns (model, tokenizer, img_proc, ckpt_config, model_loaded).
+    """
+    try:
+        from nitrogen.inference_session import load_model
+        model, tokenizer, img_proc, ckpt_config, _, _ = load_model(checkpoint)
+        model.to(device)
+        return model, tokenizer, img_proc, ckpt_config, True
+    except Exception as e:
+        print(f"WARNING: Could not load full model: {e}")
+        print("Will use basic image processor for analysis...")
+        from transformers import AutoImageProcessor
+        img_proc = AutoImageProcessor.from_pretrained("google/siglip-large-patch16-256")
+        return None, None, img_proc, None, False
+
+
+def _run_training_loop(model, dataloader, optimizer, scheduler, device, tracker,
+                       epochs, ckpt_config, sessions, output_path):
+    """Run the epoch loop, saving the best checkpoint along the way."""
+    best_loss = float("inf")
+    for epoch in range(1, epochs + 1):
+        loss = train_epoch(model, dataloader, optimizer, device, epoch)
+        scheduler.step()
+        tracker.add_epoch_loss(loss)
+
+        print(f"Epoch {epoch}: Loss = {loss:.6f}")
+
+        if loss < best_loss:
+            best_loss = loss
+            torch.save({
+                "model": model.state_dict(),
+                "ckpt_config": ckpt_config.model_dump() if ckpt_config else {},
+                "epoch": epoch,
+                "loss": loss,
+                "dagger_sessions": sessions,
+            }, output_path)
+            print(f"  Saved best model to {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="DAgger training with analytics")
     parser.add_argument("--corrections", type=str, default="./corrections",
@@ -529,20 +599,9 @@ def main():
     # Load model (or just image processor for analysis)
     print(f"\nLoading model from {args.checkpoint}...")
 
-    try:
-        from nitrogen.inference_session import load_model
-        model, tokenizer, img_proc, ckpt_config, game_mapping, _ = load_model(args.checkpoint)
-        model.to(device)
-        model_loaded = True
-    except Exception as e:
-        print(f"WARNING: Could not load full model: {e}")
-        print("Will use basic image processor for analysis...")
-        from transformers import AutoImageProcessor
-        img_proc = AutoImageProcessor.from_pretrained("google/siglip-large-patch16-256")
-        model_loaded = False
-        model = None
-        tokenizer = None
-        ckpt_config = None
+    model, tokenizer, img_proc, ckpt_config, model_loaded = _load_model_and_proc(
+        args.checkpoint, device
+    )
 
     # Action/context dims come from the checkpoint config when the model loaded.
     if model_loaded:
@@ -614,33 +673,17 @@ def main():
     tracker.start()
 
     # Training loop
-    print(f"\nStarting training...")
+    print("\nStarting training...")
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
     print()
 
-    best_loss = float("inf")
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(1, args.epochs + 1):
-        loss = train_epoch(model, dataloader, optimizer, device, epoch)
-        scheduler.step()
-        tracker.add_epoch_loss(loss)
-
-        print(f"Epoch {epoch}: Loss = {loss:.6f}")
-
-        if loss < best_loss:
-            best_loss = loss
-            torch.save({
-                "model": model.state_dict(),
-                "ckpt_config": ckpt_config.model_dump() if ckpt_config else {},
-                "epoch": epoch,
-                "loss": loss,
-                "dagger_sessions": sessions,
-            }, output_path)
-            print(f"  Saved best model to {output_path}")
+    _run_training_loop(model, dataloader, optimizer, scheduler, device, tracker,
+                       args.epochs, ckpt_config, sessions, output_path)
 
     tracker.end()
 
@@ -652,16 +695,16 @@ def main():
     print("\n" + "="*70)
     print("TRAINING COMPLETE")
     print("="*70)
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Corrections used: {len(dataset)}")
     print(f"  Final loss: {training_summary['final_loss']:.6f}")
     print(f"  Best loss: {training_summary['best_loss']:.6f}")
     print(f"  Duration: {training_summary['training_duration_seconds']:.1f}s")
     print(f"\nModel saved to: {output_path}")
-    print(f"\nNext steps:")
+    print("\nNext steps:")
     print(f"  1. Test: python scripts/serve.py {output_path} --timesteps 2")
-    print(f"  2. Collect more corrections with play_interactive.py")
-    print(f"  3. Train again for further improvement!")
+    print("  2. Collect more corrections with play_interactive.py")
+    print("  3. Train again for further improvement!")
     print("="*70)
 
 

@@ -79,7 +79,7 @@ joystick_scale = 1.0
 
 def toggle_joystick_scale():
     global joystick_scale
-    joystick_scale = 0.5 if joystick_scale == 1.0 else 1.0
+    joystick_scale = 0.5 if joystick_scale > 0.75 else 1.0
     print(f">>> JOYSTICK SCALE: {int(joystick_scale * 100)}%")
 
 
@@ -182,7 +182,7 @@ else:
         print(f"Using explicit capture region: {game_region}")
     else:
         print(f"Looking for game window matching: {args.window_name}")
-        game_region = find_game_window(process_name=args.process, window_name=args.window_name)
+        game_region = find_game_window(window_name=args.window_name)
         print(f"Found window region: {game_region}")
     print("Initializing screen capture (mss)...")
     camera = dxcam.create(output_color="RGB", region=game_region)
@@ -245,7 +245,12 @@ def apply_action(j_left, j_right, buttons):
 
 
 print(f"\n{'='*60}")
-_src = "pipewire portal" if use_pipewire else f"region {region_from_str(args.region) if args.region else args.window_name}"
+if use_pipewire:
+    _src = "pipewire portal"
+elif args.region:
+    _src = f"region {region_from_str(args.region)}"
+else:
+    _src = f"region {args.window_name}"
 print(f"Starting AI control (capture: {_src})")
 print(f"Target FPS: {args.fps} | Press Ctrl+C to stop")
 print(f"{'='*60}\n")

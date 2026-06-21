@@ -31,7 +31,7 @@ from evdev import UInput, ecodes as e, AbsInfo
 # the real xpad driver reports, so Steam applies its native Xbox 360 mapping.
 # Face buttons are POSITION based (SOUTH=A, EAST=B, WEST=X, NORTH=Y), which is
 # how NitroGen's token set names them.
-class _XUSB_BUTTON:
+class XUSBButton:
     XUSB_GAMEPAD_A = e.BTN_SOUTH              # bottom  (A)
     XUSB_GAMEPAD_B = e.BTN_EAST               # right   (B)
     XUSB_GAMEPAD_X = e.BTN_NORTH              # left    (X)  -> BTN_X == BTN_NORTH
@@ -50,7 +50,7 @@ class _XUSB_BUTTON:
     XUSB_GAMEPAD_DPAD_RIGHT = "DPAD_RIGHT"
 
 
-XUSB_BUTTON = _XUSB_BUTTON
+XUSB_BUTTON = XUSBButton
 
 _KEY_BUTTONS = [
     e.BTN_SOUTH, e.BTN_EAST, e.BTN_NORTH, e.BTN_WEST,

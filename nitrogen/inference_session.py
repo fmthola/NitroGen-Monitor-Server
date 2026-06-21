@@ -1,12 +1,13 @@
 import time
 import json
+import math
 from collections import deque
 
 import torch
 import numpy as np
 
 from transformers import AutoImageProcessor
-from nitrogen.flow_matching_transformer.nitrogen import NitroGen, NitroGen_Config
+from nitrogen.flow_matching_transformer.nitrogen import NitroGen, NitroGenConfig
 from nitrogen.mm_tokenizers import NitrogenTokenizerConfig, NitrogenTokenizer, Tokenizer
 from nitrogen.cfg import CkptConfig
 from nitrogen.shared import PATH_REPO
@@ -40,7 +41,7 @@ def summarize_parameters(module, name='model', depth=0, max_depth=3):
 
 def load_model(checkpoint_path: str):
     """Load model and args from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     ckpt_config = CkptConfig.model_validate(checkpoint["ckpt_config"])
     model_cfg = ckpt_config.model_cfg
     tokenizer_cfg = ckpt_config.tokenizer_cfg
@@ -52,9 +53,9 @@ def load_model(checkpoint_path: str):
     img_proc = AutoImageProcessor.from_pretrained(model_cfg.vision_encoder_name, use_fast=True)
 
     # Create VLM with pre-loaded language model
-    if isinstance(model_cfg, NitroGen_Config):
+    if isinstance(model_cfg, NitroGenConfig):
         assert isinstance(tokenizer_cfg, NitrogenTokenizerConfig), \
-            "NitroGen_Config requires NitrogenTokenizerConfig for tokenization"
+            "NitroGenConfig requires NitrogenTokenizerConfig for tokenization"
         tokenizer_cfg.training = False
         if tokenizer_cfg.game_mapping_cfg is not None:
             tokenizer_cfg.game_mapping_cfg.src_files = [
@@ -64,7 +65,6 @@ def load_model(checkpoint_path: str):
         tokenizer = NitrogenTokenizer(tokenizer_cfg)
         game_mapping = tokenizer.game_mapping
         model = NitroGen(config=model_cfg, game_mapping=game_mapping)
-        # model.num_inference_timesteps = 16
         action_downsample_ratio = 1
     else:
         raise ValueError(f"Unsupported model config type: {type(model_cfg)}")
@@ -113,7 +113,7 @@ class InferenceSession:
 
         self.max_buffer_size = context_length if context_length is not None else self.modality_config.frame_per_sample
         self.action_interleaving = self.modality_config.action_interleaving
-        self.is_flowmatching = isinstance(self.ckpt_config.model_cfg, NitroGen_Config)
+        self.is_flowmatching = isinstance(self.ckpt_config.model_cfg, NitroGenConfig)
 
         # Buffers
         self.obs_buffer = deque(maxlen=self.max_buffer_size)
@@ -186,7 +186,7 @@ class InferenceSession:
     
         if self.action_interleaving and len(self.action_buffer) > 0:
             action_tensors = {
-                key: torch.cat([a[key] for a in list(self.action_buffer)], dim=0)
+                key: torch.cat([a[key] for a in self.action_buffer], dim=0)
                 for key in ["buttons", "j_left", "j_right"]
             }
         else:
@@ -203,7 +203,7 @@ class InferenceSession:
 
         # Run inference
         if self.is_flowmatching:
-            predicted_actions = self._predict_flowmatching(pixel_values, action_tensors)
+            predicted_actions = self._predict_flowmatching(pixel_values)
         else:
             predicted_actions = self._predict_ar(pixel_values, action_tensors)
         
@@ -214,7 +214,6 @@ class InferenceSession:
         print(f"Inference time: {inference_time:.3f}s")
 
         # Convert to list of action dicts
-        n_actions = len(predicted_actions["buttons"])
         j_left = predicted_actions["j_left"].squeeze().cpu().numpy()
         j_right = predicted_actions["j_right"].squeeze().cpu().numpy()
         buttons = predicted_actions["buttons"].squeeze().cpu().numpy()
@@ -225,7 +224,7 @@ class InferenceSession:
             "buttons": buttons,
         }
 
-    def _predict_flowmatching(self, pixel_values, action_tensors):
+    def _predict_flowmatching(self, pixel_values):
 
         available_frames = len(self.obs_buffer)
         frames = torch.zeros((self.max_buffer_size, *pixel_values.shape[1:]), 
@@ -262,7 +261,7 @@ class InferenceSession:
         
         with torch.inference_mode():
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                if self.cfg_scale == 1.0:
+                if math.isclose(self.cfg_scale, 1.0):
                     model_output = self.model.get_action(tokenized_data_with_history, 
                                                         old_layout=self.old_layout)
                 else:

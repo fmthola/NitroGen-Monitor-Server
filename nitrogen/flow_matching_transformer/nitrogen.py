@@ -22,7 +22,7 @@ _ACT_TOKEN = 4
 _GAME_ID_TOKEN = 6
 
 
-class NitroGen_Config(BaseModel):
+class NitroGenConfig(BaseModel):
     model_type: str = Field(default="nitrogen", frozen=True)
 
     add_pos_embed: bool = Field(default=False, description="Whether to add positional embedding")
@@ -50,7 +50,7 @@ class NitroGen_Config(BaseModel):
     tune_vl_mixing: bool = Field(default=True, description="Tune vl mixing if True.")
 
     @classmethod
-    def from_yaml(cls, yaml_path: str | Path) -> "NitroGen_Config":
+    def from_yaml(cls, yaml_path: str | Path) -> "NitroGenConfig":
         """Load configuration from a YAML file."""
         with open(yaml_path, "r") as f:
             config_dict = yaml.safe_load(f)
@@ -75,7 +75,6 @@ class SinusoidalPositionalEncoding(nn.Module):
         # We'll compute sin/cos frequencies across dim T
         timesteps = timesteps.float()  # ensure float
 
-        B, T = timesteps.shape
         device = timesteps.device
 
         half_dim = self.embedding_dim // 2
@@ -103,9 +102,9 @@ class CategorySpecificLinear(nn.Module):
         self.b = nn.Parameter(torch.zeros(num_categories, hidden_dim))
 
     def forward(self, x, cat_ids):
-        selected_W = self.W[cat_ids]
+        selected_w = self.W[cat_ids]
         selected_b = self.b[cat_ids]
-        return torch.bmm(x, selected_W) + selected_b.unsqueeze(1)
+        return torch.bmm(x, selected_w) + selected_b.unsqueeze(1)
 
 
 class CategorySpecificMLP(nn.Module):
@@ -168,12 +167,12 @@ class MultiEmbodimentActionEncoder(nn.Module):
 
 
 class NitroGen(torch.nn.Module):
-    config_class = NitroGen_Config
+    config_class = NitroGenConfig
     supports_gradient_checkpointing = True
 
     def __init__(
         self,
-        config: NitroGen_Config,
+        config: NitroGenConfig,
         game_mapping: dict[str, int] | None = None, # Used to add a game ID token
     ):
         super().__init__()
@@ -190,26 +189,13 @@ class NitroGen(torch.nn.Module):
             self.vision_encoder_type = "hf_auto"
         self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
         self.num_timestep_buckets = config.num_timestep_buckets
-        # self.model = instantiate(config.diffusion_model_cfg)
         self.model = DiT(config=config.diffusion_model_cfg)
         self.action_dim = config.action_dim
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
 
-        # self.vl_self_attention_model = instantiate(config.vl_self_attention_cfg)
         self.vl_self_attention_model = SelfAttentionTransformer(config=config.vl_self_attention_cfg)
 
-        # if config.qformer_cfg is not None:
-        #     self.qformer = instantiate(config.qformer_cfg)
-        # else:
-        #     self.qformer = nn.Identity()
-
-        # self.state_encoder = CategorySpecificMLP(
-        #     num_categories=config.max_num_embodiments,
-        #     input_dim=config.max_state_dim,
-        #     hidden_dim=self.hidden_size,
-        #     output_dim=self.hidden_size,
-        # )
         self.action_encoder = MultiEmbodimentActionEncoder(
             action_dim=config.action_dim,
             hidden_size=self.hidden_size,
@@ -222,31 +208,17 @@ class NitroGen(torch.nn.Module):
             hidden_dim=self.hidden_size,
             output_dim=self.action_dim,
         )
-        # self.mm_vision_select_layer = config.mm_vision_select_layer
-        # if config.mm_projector_cfg is not None:
-        #     self.mm_projector = instantiate(config.mm_projector_cfg)
-        # else:
         self.mm_projector = None
         if config.add_pos_embed:
             self.position_embedding = nn.Embedding(config.max_seq_len, self.hidden_size)
             nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
-        # if config.add_view_embed:
-        #     self.view_embedding = nn.Embedding(config.max_num_views, self.hidden_size)
-        #     nn.init.normal_(self.view_embedding.weight, mean=0.0, std=0.02)
-
-        # self.vision_projector = None
-        # if config.vision_hidden_size != self.hidden_size:
-        #     self.vision_projector = nn.Sequential(
-        #         nn.Linear(config.vision_hidden_size, self.hidden_size),
-        #         nn.LayerNorm(self.hidden_size),
-        #     )
 
         self.game_mapping = game_mapping
         # Create an embedding table for game IDs
         # Game ID tokens will be put inside vision-language tokens
         # so they need to be projected to the same dimension
         if self.game_mapping is not None:
-            # 0 = unconditional
+            # index zero is reserved as the unconditional padding slot
             self.game_embedding = nn.Embedding(
                 len(self.game_mapping),
                 self.vision_hidden_size,
@@ -338,8 +310,6 @@ class NitroGen(torch.nn.Module):
                 self.action_decoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
-                # if self.config.add_view_embed:
-                #     self.view_embedding.eval()
             if not self.tune_diffusion_model:
                 self.model.eval()
             if not self.tune_vision_tower:
@@ -359,15 +329,12 @@ class NitroGen(torch.nn.Module):
         return (1 - sample) * self.config.noise_s
 
     def encode_images(self, images): #, view_ids):
-        batch_size, num_frames, channels, height, width = images.shape
+        _, num_frames, channels, height, width = images.shape
         images = images.reshape(-1, channels, height, width)
 
         image_features = self.vision_encoder(images)["last_hidden_state"]
         image_features = rearrange(image_features, "(b f) n d -> b f n d", f=num_frames)
 
-        # if self.vision_projector is not None:
-        #     # change the hidden dimension of the vision features
-        #     image_features = self.vision_projector(image_features)
         if self.mm_projector is not None:
             image_features = self.mm_projector(image_features)  # [B, 256, 1024] -> [B, 16, 1024]
         return image_features
@@ -379,7 +346,7 @@ class NitroGen(torch.nn.Module):
         )
 
         # Extract dimensions from vision tensor
-        B, num_images, tokens_per_image, hidden_size = vision.shape
+        B, _, tokens_per_image, _ = vision.shape
 
         # Create mask for _IMG_TOKEN positions
         vision_mask = (vl_token_ids == _IMG_TOKEN)  # [B, T]
@@ -475,41 +442,16 @@ class NitroGen(torch.nn.Module):
         action = action.squeeze(1)
         return action
 
-    # def unpack_actions(self, actions):
-    #     # Unpack the actions into j_left, j_right, buttons
-    #     j_left = actions[:, :, :2]
-    #     j_right = actions[:, :, 2:4]
-    #     buttons = actions[:, :, 4:]
-
-    #     # Denormalize the joysticks back to -1,1
-    #     j_left = j_left * 2. - 1.
-    #     j_right = j_right * 2. - 1.
-
-    #     # Clip into [-1,1]
-    #     j_left = torch.clamp(j_left, -1, 1)
-    #     j_right = torch.clamp(j_right, -1, 1)
-
-    #     # Threshold the buttons to 0,1
-    #     buttons = (buttons > 0.5).float()
-    #     return j_left, j_right, buttons
-
     # ========= ActionHead required ============
     def forward(self, data: dict) -> dict:
         self.set_frozen_modules_to_eval_mode()
 
-        # data = action_input
         embodiment_id = data["embodiment_id"]
 
-        # # Check which data is present.
-        # has_real_action = action_input.has_real_action
         has_real_action = data["has_real_action"]
 
         # 1) Encode images/text/state
         visual_features = self.encode_images(data["images"]) #, data["view_ids"])
-        # text_features = self.siglip_model.text_model(
-        #     input_ids=data["lang_input_ids"]
-        # ).last_hidden_state
-        # state_features = self.state_encoder(data["state"], embodiment_id)
 
         # 2) Prepare noisy trajectory
         actions = data["actions"]
@@ -531,16 +473,13 @@ class NitroGen(torch.nn.Module):
             data["vl_token_ids"],
             data["sa_token_ids"],
             visual_features,
-            # text_features,
-            # state_features,
             action_features,
             data["dropped_images"],
             game_ids=data.get("game_id"),
         )
 
         vl_embs = self.vl_self_attention_model(vl_embs)
-        # vl_embs = self.qformer(vl_embs)
-        model_output, all_hidden_states = self.model(
+        model_output, _ = self.model(
             hidden_states=sa_embs,
             encoder_hidden_states=vl_embs,
             encoder_attention_mask=data["vl_attn_mask"],
@@ -573,7 +512,6 @@ class NitroGen(torch.nn.Module):
           3) x(t + dt) = x(t) + dt * velocity
         """
 
-        # data = action_input
         embodiment_id = data["embodiment_id"]
 
         batch_size = data["images"].shape[0]
@@ -591,10 +529,6 @@ class NitroGen(torch.nn.Module):
 
         # 2) Encode static context (images, text, state) once if it does not depend on actions
         visual_features = self.encode_images(data["images"]) #, data["view_ids"])
-        # text_features = self.siglip_model.text_model(
-        #     input_ids=data["lang_input_ids"]
-        # ).last_hidden_state
-        # state_features = self.state_encoder(data["state"], embodiment_id)
 
         # 3) Start denoising the actions
         for i in range(num_steps):
@@ -613,14 +547,11 @@ class NitroGen(torch.nn.Module):
                 data["vl_token_ids"],
                 data["sa_token_ids"],
                 visual_features,
-                # text_features,
-                # state_features,
                 action_features,
                 data["dropped_images"],
                 game_ids=data["game_ids"],
             )
             vl_embs = self.vl_self_attention_model(vl_embs)
-            # vl_embs = self.qformer(vl_embs)
             # ---- (c) Forward pass to get velocity = d/dt x(t)
             timesteps = torch.from_numpy(np.array([t_discretized])).to(device).long()
             model_output = self.model(
@@ -658,7 +589,6 @@ class NitroGen(torch.nn.Module):
           3) x(t + dt) = x(t) + dt * velocity
         """
 
-        # data = action_input
         embodiment_id = data_cond["embodiment_id"]
 
         batch_size = data_cond["images"].shape[0]
@@ -677,10 +607,6 @@ class NitroGen(torch.nn.Module):
         # 2) Encode static context (images, text, state) once if it does not depend on actions
         visual_features_cond = self.encode_images(data_cond["images"])
         visual_features_uncond = self.encode_images(data_uncond["images"])
-        # text_features = self.siglip_model.text_model(
-        #     input_ids=data["lang_input_ids"]
-        # ).last_hidden_state
-        # state_features = self.state_encoder(data["state"], embodiment_id)
 
         # 3) Start denoising the actions
         for i in range(num_steps):

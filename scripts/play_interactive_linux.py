@@ -114,7 +114,7 @@ class PhysicalController:
             return True
         if s["lt"] > 0.3 or s["rt"] > 0.3:
             return True
-        return any(v for v in s["buttons"].values())
+        return any(s["buttons"].values())
 
 
 class CorrectionRecorder:
@@ -211,6 +211,20 @@ def apply_ai(pad, j_left, j_right, buttons_seq):
     pad.update()
 
 
+def _decide_control(m, human_active, pad, obs, hs, ai_action, jl, jr, btn, rec):
+    """Apply the action for the current mode and return the control label."""
+    if m == "human" or (m == "auto" and human_active):
+        # Human in control: neutralize the virtual pad so the physical
+        # controller drives the game, and record the correction.
+        pad.reset(); pad.update()
+        rec.record(obs, hs, ai_action)
+        return "HUMAN"
+    elif m == "ai" or m == "auto":
+        apply_ai(pad, jl[0], jr[0], btn[0])
+        return "AI"
+    return "?"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Linux interactive DAgger recorder")
     ap.add_argument("--port", type=int, default=5555)
@@ -268,17 +282,7 @@ def main():
             hs = controller.get_state()
             human_active = controller.is_active(hs)
 
-            if m == "human" or (m == "auto" and human_active):
-                # Human in control: neutralize the virtual pad so the physical
-                # controller drives the game, and record the correction.
-                pad.reset(); pad.update()
-                rec.record(obs, hs, ai_action)
-                ctrl = "HUMAN"
-            elif m == "ai" or m == "auto":
-                apply_ai(pad, jl[0], jr[0], btn[0])
-                ctrl = "AI"
-            else:
-                ctrl = "?"
+            ctrl = _decide_control(m, human_active, pad, obs, hs, ai_action, jl, jr, btn, rec)
 
             steps += 1
             if steps % 10 == 0:

@@ -21,95 +21,111 @@ import win32gui
 import win32api
 import win32con
 
+_UNSUPPORTED_CONTROLLER_TYPE = "Unsupported controller type"
+
+
+def _get_process_architecture(pid):
+    """Return the architecture ("x86"/"x64"/"unknown") for the given PID."""
+    try:
+        # Check if process is 32-bit or 64-bit
+        process_handle = win32api.OpenProcess(
+            win32con.PROCESS_QUERY_INFORMATION,
+            False,
+            pid
+        )
+        is_wow64 = win32process.IsWow64Process(process_handle)
+        win32api.CloseHandle(process_handle)
+
+        # On 64-bit Windows: WOW64 means "Windows 32-bit on Windows 64-bit", i.e. a 32-bit process
+        return "x86" if is_wow64 else "x64"
+    except Exception:
+        return "unknown"
+
+
+def _enumerate_windows_for_pid(pid):
+    """Return the list of visible windows belonging to the given PID."""
+    windows = []
+
+    def enum_window_callback(hwnd, pid_to_find, windows=windows):
+        _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
+        if found_pid == pid_to_find:
+            window_text = win32gui.GetWindowText(hwnd)
+            if window_text and win32gui.IsWindowVisible(hwnd):
+                windows.append({
+                    'hwnd': hwnd,
+                    'title': window_text,
+                    'visible': win32gui.IsWindowVisible(hwnd)
+                })
+        return True
+
+    try:
+        win32gui.EnumWindows(enum_window_callback, pid)
+    except Exception:
+        pass
+    return windows
+
+
+def _select_best_window(windows, pid):
+    """Pick the most likely game window title from the enumerated windows."""
+    window_name = None
+    if windows:
+        if len(windows) > 1:
+            print(f"Multiple windows found for PID {pid}: {[win['title'] for win in windows]}")
+            print("Using heuristics to select the correct window...")
+        # Filter out common proxy/helper windows
+        proxy_keywords = ['d3dproxywindow', 'proxy', 'helper', 'overlay']
+
+        # First try to find a visible window without proxy keywords
+        for win in windows:
+            if not any(keyword in win['title'].lower() for keyword in proxy_keywords):
+                window_name = win['title']
+                break
+
+        # If no good window found, just use the first one
+        if window_name is None and windows:
+            window_name = windows[0]['title']
+    return window_name
+
+
 def get_process_info(process_name):
     """
     Get process information for a given process name on Windows.
-    
+
     Args:
         process_name (str): Name of the process (e.g., "isaac-ng.exe")
-    
+
     Returns:
         list: List of dictionaries containing PID, window_name, and architecture
               for each matching process. Returns empty list if no process found.
     """
     results = []
-    
+
     # Find all processes with the given name
     for proc in psutil.process_iter(['pid', 'name']):
         try:
             if proc.info['name'].lower() == process_name.lower():
                 pid = proc.info['pid']
-                
-                # Get architecture
-                try:
-                    # Check if process is 32-bit or 64-bit
-                    process_handle = win32api.OpenProcess(
-                        win32con.PROCESS_QUERY_INFORMATION, 
-                        False, 
-                        pid
-                    )
-                    is_wow64 = win32process.IsWow64Process(process_handle)
-                    win32api.CloseHandle(process_handle)
-                    
-                    # On 64-bit Windows: WOW64 means "Windows 32-bit on Windows 64-bit", i.e. a 32-bit process
-                    architecture = "x86" if is_wow64 else "x64"
-                except:
-                    architecture = "unknown"
-                
-                # Find windows associated with this PID
-                windows = []
-                
-                def enum_window_callback(hwnd, pid_to_find):
-                    _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
-                    if found_pid == pid_to_find:
-                        window_text = win32gui.GetWindowText(hwnd)
-                        if window_text and win32gui.IsWindowVisible(hwnd):
-                            windows.append({
-                                'hwnd': hwnd,
-                                'title': window_text,
-                                'visible': win32gui.IsWindowVisible(hwnd)
-                            })
-                    return True
-                
-                # Find all windows for this PID
-                try:
-                    win32gui.EnumWindows(enum_window_callback, pid)
-                except:
-                    pass
-                
-                # Choose the best window
-                window_name = None
-                if windows:
-                    if len(windows) > 1:
-                        print(f"Multiple windows found for PID {pid}: {[win['title'] for win in windows]}")
-                        print("Using heuristics to select the correct window...")
-                    # Filter out common proxy/helper windows
-                    proxy_keywords = ['d3dproxywindow', 'proxy', 'helper', 'overlay']
-                    
-                    # First try to find a visible window without proxy keywords
-                    for win in windows:
-                        if not any(keyword in win['title'].lower() for keyword in proxy_keywords):
-                            window_name = win['title']
-                            break
-                    
-                    # If no good window found, just use the first one
-                    if window_name is None and windows:
-                        window_name = windows[0]['title']
-                
+
+                architecture = _get_process_architecture(pid)
+
+                windows = _enumerate_windows_for_pid(pid)
+
+                window_name = _select_best_window(windows, pid)
+
                 results.append({
                     'pid': pid,
                     'window_name': window_name,
                     'architecture': architecture
                 })
-                
+
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    
+
     if len(results) == 0:
         raise ValueError(f"No process found with name: {process_name}")
     elif len(results) > 1:
         print(f"Warning: Multiple processes found with name '{process_name}'. Returning first match.")
-    
+
     return results[0]
 
 
@@ -180,7 +196,7 @@ class GamepadEmulator:
             self.gamepad = vg.VDS4Gamepad()
             self.mapping = PS4_MAPPING
         else:
-            raise ValueError("Unsupported controller type")
+            raise ValueError(_UNSUPPORTED_CONTROLLER_TYPE)
 
         # Initialize joystick values to keep track of the current state
         self.left_joystick_x: int = 0
@@ -252,7 +268,7 @@ class GamepadEmulator:
         elif self.controller_type == "ps4":
             self.gamepad.press_button(button=getattr(vg.DS4_BUTTONS, button_mapped))
         else:
-            raise ValueError("Unsupported controller type")
+            raise ValueError(_UNSUPPORTED_CONTROLLER_TYPE)
 
     def release_button(self, button):
         """
@@ -267,7 +283,7 @@ class GamepadEmulator:
         elif self.controller_type == "ps4":
             self.gamepad.release_button(button=getattr(vg.DS4_BUTTONS, button_mapped))
         else:
-            raise ValueError("Unsupported controller type")
+            raise ValueError(_UNSUPPORTED_CONTROLLER_TYPE)
 
     def set_trigger(self, trigger, value):
         """
@@ -417,7 +433,7 @@ class GamepadEnv(Env):
         print(f"Game process found: {self.game} (PID: {self.game_pid}, Arch: {self.game_arch}, Window: {self.game_window_name})")
 
         if self.game_pid is None:
-            raise Exception(f"Could not find PID for game: {game}")
+            raise RuntimeError(f"Could not find PID for game: {game}")
 
 
         self.observation_space = Box(
@@ -460,7 +476,7 @@ class GamepadEnv(Env):
                 break
 
         if not self.game_window:
-            raise Exception(f"No window found with game name: {self.game}")
+            raise RuntimeError(f"No window found with game name: {self.game}")
 
         self.game_window.activate()
         l, t, r, b = self.game_window.left, self.game_window.top, self.game_window.right, self.game_window.bottom

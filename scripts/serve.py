@@ -100,7 +100,7 @@ if __name__ == "__main__":
 
     print(f"\n{'='*60}")
     print(f"Server running on port {args.port}")
-    print(f"Waiting for requests...")
+    print("Waiting for requests...")
     print(f"{'='*60}\n")
 
     try:
