@@ -293,6 +293,7 @@ try:
             continue
 
         obs = preprocess_frame(frame)
+        obs_brightness = float(np.asarray(obs).mean())  # >0 means real frames (not black)
         inference_start = time.perf_counter()
         pred = policy.predict(obs)
         inference_time = time.perf_counter() - inference_start
@@ -320,7 +321,7 @@ try:
                 rx, ry = j_right_seq[k]
                 pressed = [TOKEN_SET[i] for i, b in enumerate(buttons_seq[k]) if b > BUTTON_PRESS_THRES]
                 print(f"Step {step_count:5d} | target {args.fps}fps | Inf: {inference_time*1000:.0f}ms "
-                      f"(action {k+1}/{n_play} of chunk) | L:({lx:+.2f},{ly:+.2f}) R:({rx:+.2f},{ry:+.2f}) | Btns: {pressed}",
+                      f"| vis {obs_brightness:5.1f} (>0=seeing) | L:({lx:+.2f},{ly:+.2f}) R:({rx:+.2f},{ry:+.2f}) | Btns: {pressed}",
                       flush=True)
 
             step_count += 1

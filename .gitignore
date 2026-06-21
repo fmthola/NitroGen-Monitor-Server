@@ -9,3 +9,7 @@ out/
 
 # Python build metadata
 *.egg-info/
+
+# DAgger correction recordings (gameplay data, can be large)
+corrections/
+corrections_test/

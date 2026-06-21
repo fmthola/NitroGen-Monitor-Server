@@ -328,6 +328,46 @@ done and verified; unchecked = remaining.
 > port). The model uses ~2 GB; keep Cyberpunk at settings that leave that headroom
 > on the 8 GB card.
 
+## Training it to drive better (DAgger)
+
+The base model is a one-frame reactive policy and a weak driver. NVIDIA froze the
+weights in December 2025 and shipped no successor, so the model will not improve on
+its own. The paper's own result is that fine-tuning the released checkpoint beats
+training from scratch on a new game. The way to a better driver is to teach it your
+corrections with DAgger.
+
+The Linux recorder is `scripts/play_interactive_linux.py`. It needs a physical
+controller plugged in. The AI drives. When you move the controller you take over
+and that moment is recorded as a correction. Each correction stores the frame, the
+action the AI chose, and the action you gave.
+
+```bash
+# 1) Record corrections (server running; pick the game window in the picker)
+DISPLAY=:0 PYTHONPATH=$PWD /var/home/$USER/nitrogen-play-venv/bin/python \
+  scripts/play_interactive_linux.py --port 5555 --out ./corrections
+```
+
+`scripts/train_dagger.py` fine-tunes the checkpoint on those corrections. It now
+runs the model's real flow-matching loss. The earlier version shipped a placeholder
+that computed a zero loss and changed nothing. Training loads the full model and
+gradients, so free the RTX first — close the game and stop the server.
+
+```bash
+# 2) Train on the corrections (run in the GPU container; needs the RTX free)
+scripts/bazzite_server.sh shell
+python3 scripts/train_dagger.py --corrections ./corrections \
+  --checkpoint models/ng.pt --output models/ng_dagger.pt --epochs 5 --freeze-vision
+#   --analyze-only first if you just want the correction analysis and no training.
+
+# 3) Serve the fine-tuned model and play again
+python3 scripts/serve.py models/ng_dagger.pt --port 5555 --timesteps 2
+```
+
+Run the loop a few times. Each round of corrections on the same situation pushes the
+model toward your driving. `--freeze-vision` trains the action and diffusion layers
+only, which fits the 8 GB card. Both the model and the dataset are licensed for
+non-commercial use.
+
 ## Requirements (original Windows path)
 
 - **Windows 10/11** (required for DirectX capture)

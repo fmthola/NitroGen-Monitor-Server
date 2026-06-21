@@ -267,49 +267,51 @@ class CorrectionAnalyzer:
 # =============================================================================
 # DATASET
 # =============================================================================
-class CorrectionDataset(Dataset):
-    """Dataset of human corrections for DAgger training."""
+from nitrogen.shared import BUTTON_ACTION_TOKENS
 
-    def __init__(self, corrections_dirs: list, img_proc, analyzer: CorrectionAnalyzer, action_horizon: int = 8):
+# Map the recorder's lowercase human button names onto the model's button tokens.
+_HUMAN_TO_TOKEN = {b.lower(): b for b in BUTTON_ACTION_TOKENS}
+
+
+def human_buttons_to_vec(buttons: dict):
+    """Build the model's 21-dim button vector (BUTTON_ACTION_TOKENS order) from a
+    recorder human-button dict (lowercase names like 'south','left_trigger')."""
+    vec = []
+    for tok in BUTTON_ACTION_TOKENS:
+        vec.append(float(buttons.get(tok.lower(), 0)))
+    return vec
+
+
+class CorrectionDataset(Dataset):
+    """Human corrections, tokenized into the exact dict model.forward() expects.
+
+    Each item runs the frame + the human action through the model's tokenizer, so
+    the action is laid out as the model wants ([buttons, j_left, j_right], joysticks
+    in [0,1]) and the vl/sa token ids + masks are built correctly.
+    """
+
+    def __init__(self, corrections_dirs, img_proc, tokenizer, analyzer,
+                 frame_per_sample=1, action_horizon=16):
         self.img_proc = img_proc
+        self.tokenizer = tokenizer
+        self.frame_per_sample = frame_per_sample
         self.action_horizon = action_horizon
         self.samples = []
-        self.analyzer = analyzer
 
-        # Load all corrections
         for corrections_dir in corrections_dirs:
-            corrections_path = Path(corrections_dir)
-
-            # Try parquet first
-            parquet_file = corrections_path / "corrections.parquet"
-            json_file = corrections_path / "corrections.json"
-
-            if POLARS_AVAILABLE and parquet_file.exists():
-                df = pl.read_parquet(parquet_file)
-                for row in df.iter_rows(named=True):
-                    sample = {
-                        "frame_path": row["frame_path"],
-                        "j_left": row["j_left"],
-                        "j_right": row["j_right"],
-                        "buttons": {k: row[k] for k in row if k not in
-                                   ["frame_idx", "frame_path", "timestamp", "j_left", "j_right"]}
-                    }
-                    self.samples.append(sample)
-
-            elif json_file.exists():
-                with open(json_file, "r") as f:
-                    corrections = json.load(f)
-                for c in corrections:
-                    sample = {
-                        "frame_path": c["frame_path"],
-                        "j_left": c["human"]["j_left"],
-                        "j_right": c["human"]["j_right"],
-                        "buttons": c["human"]["buttons"],
-                    }
-                    self.samples.append(sample)
-
-                    # Feed to analyzer
-                    analyzer.add_correction(c["human"], c["ai"])
+            json_file = Path(corrections_dir) / "corrections.json"
+            if not json_file.exists():
+                continue
+            with open(json_file) as f:
+                corrections = json.load(f)
+            for c in corrections:
+                self.samples.append({
+                    "frame_path": c["frame_path"],
+                    "j_left": c["human"]["j_left"],
+                    "j_right": c["human"]["j_right"],
+                    "buttons": c["human"]["buttons"],
+                })
+                analyzer.add_correction(c["human"], c["ai"])
 
         print(f"Loaded {len(self.samples)} corrections from {len(corrections_dirs)} sessions")
 
@@ -317,43 +319,46 @@ class CorrectionDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        sample = self.samples[idx]
-
-        # Load frame
+        s = self.samples[idx]
         try:
-            image = Image.open(sample["frame_path"]).convert("RGB")
+            image = Image.open(s["frame_path"]).convert("RGB")
             pixel_values = self.img_proc(image, return_tensors="pt")["pixel_values"].squeeze(0)
-        except Exception as e:
+        except Exception:
             pixel_values = torch.zeros(3, 256, 256)
 
-        # Build action tensor
-        j_left = sample["j_left"]
-        j_right = sample["j_right"]
-        buttons = sample["buttons"]
+        # frames: (frame_per_sample, C, H, W); only the last frame is real.
+        c, h, w = pixel_values.shape
+        frames = torch.zeros(self.frame_per_sample, c, h, w, dtype=pixel_values.dtype)
+        frames[-1] = pixel_values
+        dropped = torch.ones(self.frame_per_sample, dtype=torch.bool)
+        dropped[-1] = False
 
-        # Normalize joysticks to [0, 1]
-        j_left_norm = [(j_left[0] + 1) / 2, (j_left[1] + 1) / 2]
-        j_right_norm = [(j_right[0] + 1) / 2, (j_right[1] + 1) / 2]
+        # action in model layout: [buttons(21), j_left(2), j_right(2)], joysticks [0,1].
+        buttons = human_buttons_to_vec(s["buttons"])
+        jl = [(s["j_left"][0] + 1) / 2.0, (s["j_left"][1] + 1) / 2.0]
+        jr = [(s["j_right"][0] + 1) / 2.0, (s["j_right"][1] + 1) / 2.0]
+        one = np.array(buttons + jl + jr, dtype=np.float32)
+        action = np.repeat(one[None, :], self.action_horizon, axis=0)  # (T, 25)
 
-        # Build button vector
-        button_order = [
-            "dpad_down", "dpad_left", "dpad_right", "dpad_up",
-            "east", "left_shoulder", "left_thumb", "left_trigger",
-            "north", "right_shoulder", "right_thumb", "right_trigger",
-            "south", "west"
-        ]
-        button_vec = [float(buttons.get(b, 0)) for b in button_order]
+        data = {"frames": frames, "dropped_frames": dropped, "action": action, "game": None}
+        return self.tokenizer.encode(data)
 
-        action = j_left_norm + j_right_norm + button_vec
-        action_tensor = torch.tensor(action, dtype=torch.float32)
 
-        # Repeat for action horizon
-        actions = action_tensor.unsqueeze(0).repeat(self.action_horizon, 1)
-
-        return {
-            "pixel_values": pixel_values,
-            "actions": actions,
-        }
+def collate_tokenized(batch):
+    """Stack a list of tokenizer.encode() dicts into a batched dict."""
+    out = {}
+    for key in batch[0]:
+        vals = [b[key] for b in batch]
+        v0 = vals[0]
+        if isinstance(v0, torch.Tensor):
+            out[key] = torch.stack(vals, dim=0)
+        elif isinstance(v0, np.ndarray):
+            out[key] = torch.stack([torch.as_tensor(v) for v in vals], dim=0)
+        elif isinstance(v0, (bool, np.bool_)):
+            out[key] = torch.tensor([bool(v) for v in vals])
+        else:
+            out[key] = vals  # e.g. game: list of None
+    return out
 
 
 # =============================================================================
@@ -408,24 +413,25 @@ def find_correction_sessions(corrections_dir: str) -> list:
     return sorted(sessions)
 
 
+def _to_device(batch, device):
+    return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+
+
 def train_epoch(model, dataloader, optimizer, device, epoch):
-    """Train for one epoch."""
+    """Train one epoch with the model's real flow-matching loss."""
     model.train()
-    total_loss = 0
+    total_loss = 0.0
     num_batches = 0
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch in pbar:
+        data = _to_device(batch, device)
         optimizer.zero_grad()
-
-        pixel_values = batch["pixel_values"].to(device)
-        target_actions = batch["actions"].to(device)
-
-        # Simplified training loop (placeholder)
-        # Real implementation uses model.forward() with tokenizer
-        loss = torch.tensor(0.0, device=device, requires_grad=True)
-
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            out = model(data)                 # NitroGen.forward computes the FM loss
+            loss = out["loss"]
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), 1.0)
         optimizer.step()
 
         total_loss += loss.item()
@@ -535,11 +541,20 @@ def main():
         img_proc = AutoImageProcessor.from_pretrained("google/siglip-large-patch16-256")
         model_loaded = False
         model = None
+        tokenizer = None
         ckpt_config = None
+
+    # Action/context dims come from the checkpoint config when the model loaded.
+    if model_loaded:
+        frame_per_sample = ckpt_config.modality_cfg.frame_per_sample
+        action_horizon = ckpt_config.model_cfg.action_horizon
+    else:
+        frame_per_sample, action_horizon = 1, 16
 
     # Create dataset (this also feeds the analyzer)
     print("\nLoading and analyzing corrections...")
-    dataset = CorrectionDataset(sessions, img_proc, analyzer)
+    dataset = CorrectionDataset(sessions, img_proc, tokenizer, analyzer,
+                                frame_per_sample=frame_per_sample, action_horizon=action_horizon)
 
     if len(dataset) == 0:
         print("ERROR: No valid corrections found!")
@@ -582,7 +597,8 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=0,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_tokenized,
     )
 
     # Optimizer
