@@ -17,9 +17,10 @@ dependencies = [
     
     # Serve
     "torch",
+    "torchvision",
     "pyyaml",
     "einops",
-    "transformers",
+    "transformers<5",  # 5.x removed SiglipVisionModel.vision_model used by the model
     "pydantic",
     "diffusers",
     "polars",
@@ -43,14 +44,18 @@ serve = [
     "numpy",
     "pyzmq",
     "torch",
+    "torchvision",
     "pyyaml",
     "einops",
-    "transformers",
+    "transformers<5",  # 5.x removed SiglipVisionModel.vision_model used by the model
     "pydantic",
     "diffusers",
     "polars",
 ]
 
+# Windows play stack. The win32-only deps are platform-gated so this extra also
+# resolves on Linux (it just installs the cross-platform subset there); use the
+# play-linux extra below to get the Linux capture/gamepad backends.
 play = [
     "numpy",
     "pyzmq",
@@ -60,11 +65,26 @@ play = [
     "gymnasium",
     "psutil",
     "av",
-    "dxcam",
-    "pywinctl",
-    "vgamepad",
-    "pywin32",
-    "xspeedhack",
+    "dxcam; sys_platform == 'win32'",
+    "pywinctl; sys_platform == 'win32'",
+    "vgamepad; sys_platform == 'win32'",
+    "pywin32; sys_platform == 'win32'",
+    "xspeedhack; sys_platform == 'win32'",
+]
+
+# Linux play stack (Bazzite/Proton): mss screen capture, a uinput virtual Xbox
+# 360 pad (python-evdev), window lookup (python-xlib; xdotool used at runtime if
+# present), and pynput for the live hotkeys.
+play-linux = [
+    "numpy",
+    "pyzmq",
+    "pillow",
+    "opencv-python",
+    "psutil",
+    "mss; sys_platform == 'linux'",
+    "evdev; sys_platform == 'linux'",
+    "python-xlib; sys_platform == 'linux'",
+    "pynput; sys_platform == 'linux'",
 ]
 
 [tool.setuptools.packages.find]

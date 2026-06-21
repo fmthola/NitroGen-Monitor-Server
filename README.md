@@ -4,6 +4,15 @@ A performance-optimized implementation of NVIDIA NitroGen gaming AI agent with r
 
 > **EXPERIMENTAL PROJECT** - This is an experimental exploration of running gaming AI on consumer hardware. Expect limitations and ongoing development.
 
+> 🐧 **Linux / Bazzite port added.** This fork adds a native Linux play path
+> (screen capture + virtual gamepad + window lookup) so the agent can self-play
+> games under Steam/Proton — on the project's own dual-GPU vision (Intel Arc for
+> the game, NVIDIA RTX for inference). **The original Windows documentation below
+> is preserved unchanged.** Jump to
+> [Running on Linux (Bazzite)](#-running-on-linux-bazzite--dual-gpu-port),
+> [Model & best-practices research](#model--best-practices-research-mid-2026),
+> or [Code status](#code-status-sonarqube).
+
 ![NitroGen Monitor in Action](screenshot.png)
 
 ---
@@ -74,7 +83,200 @@ This project is actively evolving:
 
 ---
 
-## Requirements
+## 🐧 Running on Linux (Bazzite) — dual-GPU port
+
+The original project is Windows-only on the play side: it captures the screen
+with `dxcam` (DirectX) and drives a virtual pad with `vgamepad` (the ViGEmBus
+kernel driver), and `nitrogen/game_env.py` asserts `platform.system()=="windows"`.
+The **server and monitor are already cross-platform** (PyTorch + ZeroMQ + Tkinter).
+
+This fork adds a **native Linux play path** with drop-in backends that mirror the
+Windows APIs, so the Windows code is untouched:
+
+| Windows | Linux replacement | How |
+| --- | --- | --- |
+| `dxcam` (DirectX capture) | [`nitrogen/linux_capture.py`](nitrogen/linux_capture.py) | `mss` grabs the game window from X11/XWayland |
+| `vgamepad` + ViGEmBus | [`nitrogen/linux_gamepad.py`](nitrogen/linux_gamepad.py) | a `uinput` virtual Xbox 360 pad (python-evdev) |
+| `pygetwindow` | [`nitrogen/linux_window.py`](nitrogen/linux_window.py) | `xdotool` / python-Xlib window lookup |
+| `scripts/play_simple.py` | [`scripts/play_linux.py`](scripts/play_linux.py) | same loop + gameplay modes + monitor protocol |
+
+Why this works under Proton: Steam/Proton games render through **XWayland**, so the
+game window is present on the X11 display and can be grabbed by region and located
+by name — and Steam Input reads the `uinput` pad as a real Xbox 360 controller.
+
+### This machine is the project's dual-GPU vision, on Linux
+
+The README's "Dual-GPU Gaming AI" goal (Intel Arc runs the game, NVIDIA RTX runs
+inference) is exactly the validated hardware here:
+
+- **NVIDIA RTX 3070** → AI inference (`CUDA_VISIBLE_DEVICES=0`, in the distrobox)
+- **Intel Arc A770** → renders Cyberpunk via Proton (`DRI_PRIME=1 %command%`)
+- `/dev/uinput` writable by the desktop user → virtual pad needs no root
+
+### Run it (Bazzite, 3 terminals)
+
+First run the preflight to check the host: `bash scripts/bazzite_preflight.sh`.
+
+```bash
+# 0) Launch Cyberpunk 2077 via Steam in a DESKTOP (borderless) window, not Game Mode.
+#    Steam launch options for the Arc A770:  DRI_PRIME=1 %command%
+
+# 1) Model server — distrobox with CUDA on the RTX 3070
+pip install -e ".[serve]"
+huggingface-cli download nvidia/NitroGen ng.pt --local-dir ./models
+CUDA_VISIBLE_DEVICES=0 python scripts/serve.py models/ng.pt --port 5555 --timesteps 2
+
+# 2) Monitor (optional)
+python scripts/monitor.py --port 5556
+
+# 3) Agent — host (has /dev/uinput + DISPLAY)
+pip install -e ".[play-linux]"
+python scripts/play_linux.py --window-name Cyberpunk --fps 15 --actions-per-step 8
+#   ...or skip window lookup and capture an explicit region:
+python scripts/play_linux.py --region 0,0,1920,1080 --fps 15
+```
+
+The Linux play stack installs via the new **`play-linux`** extra
+(`mss`, `evdev`, `python-xlib`, `pynput`); the Windows deps are platform-gated so
+`pip install` no longer fails on Linux.
+
+> **Wayland note:** run the game in a desktop/borderless window so `mss` can grab
+> it by region. Bazzite **Game Mode / gamescope** composites separately and is not
+> captured by a screen-region grab — use desktop mode for now.
+
+### GPU server on Bazzite — composefs workaround
+
+On this Bazzite build, **`distrobox create --nvidia` fails**: podman 5.8 cannot
+`statfs` bind-mount sources on the **composefs-backed `/usr`**
+(`statfs /usr/bin/distrobox-init: no such file or directory`), which also breaks
+the usual `--nvidia` driver-library mounts. The server therefore runs under
+**plain podman** with a workaround, wrapped in
+[`scripts/bazzite_server.sh`](scripts/bazzite_server.sh):
+
+- base `python:3.12-slim` (Python+pip inside — no `apt` needed; all serve deps are wheels),
+- the GPU is passed as **device nodes** (`--device /dev/nvidia*`), not `/usr` mounts,
+- the NVIDIA userspace driver libs are **copied onto `/var`** (where bind mounts
+  work) and exposed via `LD_LIBRARY_PATH`,
+- the repo is mounted from `/var/home` (works), `--network host` for ZMQ.
+
+```bash
+scripts/bazzite_server.sh setup    # build container, install serve deps, verify CUDA
+scripts/bazzite_server.sh start    # serve models/ng.pt on :5555
+scripts/bazzite_server.sh status   # container + GPU VRAM
+```
+
+Verified on this host: `torch 2.12+cu130` sees the RTX 3070 through the staged
+libs, and `serve.py` loads `ng.pt` on the GPU (with `transformers<5` + `torchvision`,
+now pinned in `pyproject.toml`).
+
+### Free the RTX for inference (dual-GPU)
+
+The model needs ~2 GB of VRAM. On this box the **KDE desktop and `ollama` (4.6 GB)
+currently run on the RTX 3070**, leaving too little free (CUDA OOM). To realise the
+project's dual-GPU split:
+
+- Render the **desktop and the game on the Arc A770** (`DRI_PRIME=1`), keeping the
+  RTX for inference;
+- free other RTX users before a run, e.g. `ollama stop <model>` (reversible — it
+  reloads on demand). Check with `nvidia-smi`.
+
+## Model & best-practices research (mid-2026)
+
+Findings from a sourced review of the model and forks (the model is **frozen**, so
+the gains come from how it's run, not a newer checkpoint):
+
+- **No model update.** `nvidia/NitroGen` `ng.pt` (~1.97 GB) is unchanged since
+  2025-12-18; later Hugging Face commits are docs only. There is **no official
+  distilled / faster / larger / TensorRT variant** to upgrade to.
+- **Biggest real-time win — action chunking.** The model predicts a **16-action
+  chunk** per inference, but the upstream loop applies only the first action and
+  re-infers every frame. `play_linux.py` adds `--actions-per-step` (default **8**):
+  it plays several actions from each chunk before re-inferring, which cuts
+  inference load ~8× and smooths control. (Mirrors the technique in the
+  `dffdeeq/NitroGen-real-time` fork.)
+- **Free Ampere speedup — TF32.** `serve.py` now enables
+  `torch.backends.cuda.matmul.allow_tf32`; upstream left it off. bf16 autocast is
+  already on; forcing fp16 gives no benefit on a 3070.
+- **Keep CFG off (`--cfg 1.0`, default)** — any other value doubles inference cost
+  (cond+uncond). **2 timesteps** stays the sane speed/quality point; there is no
+  consistency/shortcut model for 1-step quality. Context is 1 frame, so there's no
+  KV-cache to exploit.
+- **Cyberpunk caveat.** Cyberpunk 2077 is **not** in the paper's evaluation and no
+  documented NitroGen-on-Cyberpunk run exists. The model is single-frame and
+  reactive with no long-horizon planning — expect reactive driving/combat-style
+  behavior, **not** quest completion. Cyberpunk has good native gamepad support, so
+  the gamepad path (this port) suits it better than a keyboard/mouse adapter.
+- **More capable but unusable here:** DeepMind **SIMA 2** (Gemini-based, Nov 2025)
+  is stronger but is a closed research preview — **not downloadable**, so not a
+  swap-in. NitroGen remains the best downloadable option for local self-play.
+
+## Code status (SonarQube)
+
+Scanned on the self-hosted SonarQube with a **new project key**
+(`sonar-project.properties`), 2026-06-21. Full text report:
+[`docs/evidence/sonar-report.txt`](docs/evidence/sonar-report.txt).
+
+```
+sonar.projectKey = nitrogen-monitor-server-bazzite
+sonar.sources    = nitrogen, scripts   (Python 3.10–3.12)
+```
+
+| Check | Result |
+| --- | --- |
+| Quality gate | ✅ **OK (PASS)** — 0 Blocker issues |
+| Bugs | 6 |
+| Vulnerabilities | 1 |
+| Security Hotspots | 1 (to review) |
+| Code Smells | 82 |
+| Reliability rating | C |
+| Security rating | D |
+| Maintainability rating | A |
+| Lines of code | 3,967 |
+| Duplication | 2.1% |
+| Coverage | 0.0% (no unit tests in the project) |
+
+The gate passes (no Blocker issues). The open findings are **almost entirely in
+the inherited upstream/NVIDIA code** (`game_env.py`, `play_interactive.py`,
+`validate_dataset.py`, `train_dagger.py`, `play_simple.py`,
+`inference_session.py`), not in the Linux port added here — the new backends
+(`linux_capture.py`, `linux_gamepad.py`, `linux_window.py`, `play_linux.py`) do
+not appear in the issue list.
+
+Tracked, not yet fixed:
+
+- **Security rating D** is driven by one finding — `python:S6985` unsafe load at
+  `nitrogen/inference_session.py:43` (`torch.load` without a safe loader).
+  Remediate with a safe loader / `weights_only` once checkpoint compatibility is
+  confirmed.
+- The remaining Critical items are maintainability: high cognitive complexity
+  (`S3776`) and over-broad `except` clauses (`S5754`) in the upstream scripts.
+
+> Per project policy, only the **text** gate report is committed — no SonarQube web
+> UI screenshots (they show the internal server's project view).
+
+## Linux / Bazzite validation tasks
+
+Evidence captured on the Bazzite host (Kinoite, RTX 3070 + Arc A770). Checked =
+done and verified; unchecked = remaining.
+
+- [x] Drop-in Linux backends written (capture / gamepad / window) without touching the Windows path
+- [x] `pyproject.toml` installs on Linux (`[play-linux]` extra; win32 deps platform-gated)
+- [x] Gamepad mapping unit-tested — 18/18 checks pass ([`tests/test_linux_gamepad.py`](tests/test_linux_gamepad.py))
+- [x] **Real `uinput` Xbox 360 pad enumerates on the host** — `/dev/input/event264`, vendor `0x045e` product `0x028e`, full button/axis set, accepts events
+- [x] Window backend: region parsing + xdotool/Xlib lookup verified; clean error when no window matches
+- [x] All new modules byte-compile; `serve.py` TF32 + `play_linux.py` chunk execution added
+- [x] **GPU server container stands up** despite the podman/composefs regression (plain podman + staged driver libs, see below) — [`scripts/bazzite_server.sh`](scripts/bazzite_server.sh)
+- [x] **torch sees the RTX 3070** through the staged-libs workaround (`torch 2.12+cu130`, GPU matmul OK)
+- [x] **Model downloaded** — `models/ng.pt`, 1.9 GB, valid checkpoint (public, no token)
+- [x] **Model server loads the checkpoint on the GPU** (needs `transformers<5` + `torchvision`, now pinned)
+- [x] Host play venv works — all backends import with real `cv2/numpy/mss/evdev/Xlib/zmq`
+- [ ] **Live inference run** — blocked on RTX VRAM: the desktop + `ollama` (4.6 GB) currently sit on the RTX, leaving < 2 GB free (NitroGen needs ~2 GB). Free VRAM first (see below).
+- [ ] `mss` capture of a live Proton game window + full `smoke_test_linux.py` pass
+- [ ] End-to-end: Cyberpunk on the Arc A770, agent self-playing via the virtual pad
+- [ ] Steam Input confirms the virtual pad and maps it in-game
+- [ ] Tune `--timesteps` / `--actions-per-step` / `--fps` for smooth control on this hardware
+
+## Requirements (original Windows path)
 
 - **Windows 10/11** (required for DirectX capture)
 - **NVIDIA GPU** with 4GB+ VRAM

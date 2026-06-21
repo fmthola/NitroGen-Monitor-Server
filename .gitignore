@@ -6,3 +6,6 @@ venv/
 models/
 *.log
 out/
+
+# Python build metadata
+*.egg-info/

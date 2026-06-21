@@ -71,6 +71,12 @@ if __name__ == "__main__":
     parser.add_argument("--compile", action="store_true", help="Use torch.compile for faster inference")
     args = parser.parse_args()
 
+    # Enable TF32 matmuls on Ampere+ (e.g. RTX 3070). Free latency win for the
+    # DiT/attention layers with no measurable quality cost; upstream leaves it off.
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
     session = InferenceSession.from_ckpt(args.ckpt, old_layout=args.old_layout, cfg_scale=args.cfg, context_length=args.ctx)
 
     # Optimize: reduce inference timesteps for faster speed

@@ -1,0 +1,65 @@
+SonarQube Quality Gate Report
+=============================
+Project        : NitroGen Monitor & Server (Bazzite Port)
+Project key    : nitrogen-monitor-server-bazzite
+Server         : localhost:9000 (self-hosted)
+Analysis date  : 2026-06-21
+
+1. Quality Gate
+---------------
+Quality Gate   : OK (PASS)
+
+2. Issue Counts
+---------------
+Bugs               : 6
+Vulnerabilities    : 1
+Security Hotspots  : 1
+Code Smells        : 82
+Open issues (total): 89
+  Blocker  : 0
+  Critical : 21
+  Major    : 50
+  Minor    : 18
+  Info     : 0
+
+3. Ratings
+----------
+Reliability     : C
+Security        : D
+Maintainability : A
+
+4. Size / Coverage
+------------------
+Lines of Code  : 3967
+Duplication    : 2.1%
+Coverage       : 0.0% (no unit tests / no coverage report - expected for this project)
+
+5. Top Open Issues by Severity (up to 15)
+------------------------------------------
+SEVERITY | RULE        | LOCATION                                          | DESCRIPTION
+CRITICAL | python:S6985 | nitrogen/inference_session.py:43                 | Replace this call with a safe alternative (unsafe load - vulnerability).
+CRITICAL | python:S3776 | nitrogen/game_env.py:24                          | Refactor function to reduce Cognitive Complexity from 47 to 15.
+CRITICAL | python:S5754 | nitrogen/game_env.py:56                          | Specify an exception class to catch or reraise the exception.
+CRITICAL | python:S3776 | scripts/play_interactive.py:554                  | Refactor function to reduce Cognitive Complexity from 38 to 15.
+CRITICAL | python:S3776 | scripts/validate_dataset.py:14                   | Refactor function to reduce Cognitive Complexity from 38 to 15.
+CRITICAL | python:S3776 | scripts/play_interactive.py:113                  | Refactor function to reduce Cognitive Complexity from 20 to 15.
+CRITICAL | python:S3776 | scripts/play_interactive.py:395                  | Refactor function to reduce Cognitive Complexity from 20 to 15.
+CRITICAL | python:S3776 | scripts/train_dagger.py:165                      | Refactor function to reduce Cognitive Complexity from 19 to 15.
+CRITICAL | python:S3776 | scripts/train_dagger.py:58                       | Refactor function to reduce Cognitive Complexity from 18 to 15.
+CRITICAL | python:S3776 | nitrogen/flow_matching_transformer/nitrogen.py:270 | Refactor function to reduce Cognitive Complexity from 17 to 15.
+CRITICAL | python:S5754 | scripts/play_interactive.py:247                  | Specify an exception class to catch or reraise the exception.
+CRITICAL | python:S5754 | scripts/play_interactive.py:256                  | Specify an exception class to catch or reraise the exception.
+CRITICAL | python:S5754 | scripts/validate_dataset.py:75                   | Specify an exception class to catch or reraise the exception.
+CRITICAL | python:S5754 | scripts/validate_dataset.py:88                   | Specify an exception class to catch or reraise the exception.
+CRITICAL | python:S5754 | scripts/play_simple.py:108                      | Specify an exception class to catch or reraise the exception.
+
+Notes
+-----
+- 1 Security Hotspot is open and pending review (status TO_REVIEW).
+- The Security rating of D is driven by the single S6985 vulnerability
+  (unsafe deserialization / load call). Remediate by using a safe loader
+  (e.g. weights_only / safe alternative) at nitrogen/inference_session.py:43.
+- Remaining critical issues are maintainability concerns: high cognitive
+  complexity (S3776) and bare/over-broad except clauses (S5754).
+
+FINAL: PASS (Quality Gate = OK, Blocker = 0)
