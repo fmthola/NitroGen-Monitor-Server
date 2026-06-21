@@ -17,3 +17,7 @@ corrections_test/
 # Coverage artifacts (regenerated)
 coverage.xml
 .coverage
+
+# SonarQube UI screenshots are CUI (server project view): keep local, never commit.
+docs/evidence/*.png
+docs/evidence/sonar-evidence*.html

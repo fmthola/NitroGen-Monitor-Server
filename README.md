@@ -300,8 +300,21 @@ Coverage is measured on the unit-tested logic, the `uinput` gamepad mapping at
 gamepad-output, game-loop, model, and training code is hardware- and
 game-exercised, so it is excluded from coverage in `sonar-project.properties`.
 
-> Per project policy, only the **text** gate report is committed. No SonarQube web
-> UI screenshots, which show the internal server's project view.
+### Visual evidence (Playwright)
+
+SonarQube is a web app, so its dashboard is captured with Playwright (Chromium).
+`scripts/sonar-evidence.sh` reads the server URL and admin password from the local
+credential store, logs in, and screenshots the dashboard, the issues list, and the
+measures into `docs/evidence/`, then compiles a self-contained
+`docs/evidence/sonar-evidence.html` with the shots embedded:
+
+```bash
+scripts/sonar-evidence.sh
+```
+
+Those screenshots show the internal server's project view, so they are **CUI and
+kept local** (`docs/evidence/*.png` and `sonar-evidence.html` are gitignored). Only
+the **text** gate report (`docs/evidence/sonar-report.txt`) is committed.
 
 ## Linux / Bazzite validation tasks
 
