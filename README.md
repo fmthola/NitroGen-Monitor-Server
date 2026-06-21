@@ -180,6 +180,23 @@ project's dual-GPU split:
 - free other RTX users before a run, e.g. `ollama stop <model>` (reversible — it
   reloads on demand). Check with `nvidia-smi`.
 
+### Measured inference performance
+
+The full capture-to-gamepad loop was run against the model server on the RTX 3070
+on 2026-06-21. The server held the model at 2 timesteps. Mean inference time came
+out to 34 ms per call. The model produced about 29 full predictions every second.
+
+Each prediction returns a chunk of 18 actions. The player runs through most of
+that chunk before it asks the server for the next prediction. The control rate the
+game receives is well above the raw 29 Hz prediction rate. An earlier section of
+this README measured 62 to 85 ms on the same card. The drop to 34 ms came from
+turning on TF32 and moving to a newer PyTorch build.
+
+This speed is enough to steer a vehicle and handle a fight in real time on this
+machine. The model reads a single frame and keeps no memory of the frames before
+it. It will hold its own from moment to moment. It will not plan a route or finish
+a quest on its own.
+
 ## Model & best-practices research (mid-2026)
 
 Findings from a sourced review of the model and forks (the model is **frozen**, so
@@ -270,11 +287,17 @@ done and verified; unchecked = remaining.
 - [x] **Model downloaded** — `models/ng.pt`, 1.9 GB, valid checkpoint (public, no token)
 - [x] **Model server loads the checkpoint on the GPU** (needs `transformers<5` + `torchvision`, now pinned)
 - [x] Host play venv works — all backends import with real `cv2/numpy/mss/evdev/Xlib/zmq`
-- [ ] **Live inference run** — blocked on RTX VRAM: the desktop + `ollama` (4.6 GB) currently sit on the RTX, leaving < 2 GB free (NitroGen needs ~2 GB). Free VRAM first (see below).
-- [ ] `mss` capture of a live Proton game window + full `smoke_test_linux.py` pass
-- [ ] End-to-end: Cyberpunk on the Arc A770, agent self-playing via the virtual pad
+- [x] **Live inference run on the RTX 3070** — `smoke_test_linux.py` PASSES end-to-end (capture → GPU inference → virtual pad). **~34 ms mean inference (~29/s)** at `--timesteps 2`, 18-action chunks; better than the old 62–85 ms baseline (TF32).
+- [x] `mss` capture + full `smoke_test_linux.py` pass (desktop region)
+- [ ] `mss` capture of the live **Cyberpunk** Proton window specifically
+- [ ] End-to-end: Cyberpunk running, agent self-playing via the virtual pad
 - [ ] Steam Input confirms the virtual pad and maps it in-game
 - [ ] Tune `--timesteps` / `--actions-per-step` / `--fps` for smooth control on this hardware
+
+> GPU split chosen for this host: **both Cyberpunk and inference on the RTX 3070**
+> (all-CUDA; the Arc A770 can't run CUDA inference without an experimental IPEX/XPU
+> port). The model uses ~2 GB; keep Cyberpunk at settings that leave that headroom
+> on the 8 GB card.
 
 ## Requirements (original Windows path)
 
