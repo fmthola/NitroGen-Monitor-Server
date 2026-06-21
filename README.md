@@ -95,7 +95,7 @@ Windows APIs, so the Windows code is untouched:
 
 | Windows | Linux replacement | How |
 | --- | --- | --- |
-| `dxcam` (DirectX capture) | [`nitrogen/linux_capture.py`](nitrogen/linux_capture.py) | `mss` grabs the game window from X11/XWayland |
+| `dxcam` (DirectX capture) | [`linux_capture.py`](nitrogen/linux_capture.py) (X11) + [`linux_capture_pipewire.py`](nitrogen/linux_capture_pipewire.py) (Wayland) | `mss` on X11; the desktop portal + PipeWire + GStreamer on Wayland |
 | `vgamepad` + ViGEmBus | [`nitrogen/linux_gamepad.py`](nitrogen/linux_gamepad.py) | a `uinput` virtual Xbox 360 pad (python-evdev) |
 | `pygetwindow` | [`nitrogen/linux_window.py`](nitrogen/linux_window.py) | `xdotool` / python-Xlib window lookup |
 | `scripts/play_simple.py` | [`scripts/play_linux.py`](scripts/play_linux.py) | same loop + gameplay modes + monitor protocol |
@@ -140,9 +140,38 @@ The Linux play stack installs via the new **`play-linux`** extra
 (`mss`, `evdev`, `python-xlib`, `pynput`); the Windows deps are platform-gated so
 `pip install` no longer fails on Linux.
 
-> **Wayland note:** run the game in a desktop/borderless window so `mss` can grab
-> it by region. Bazzite **Game Mode / gamescope** composites separately and is not
-> captured by a screen-region grab — use desktop mode for now.
+### Capture on Wayland (important)
+
+X11/mss screen capture returns a **black frame for everything** on a Wayland
+session, including XWayland games like Cyberpunk under Proton. The compositor owns
+the pixels and the X11 root has none. A black frame means the agent drives blind
+and emits a near-constant action, so this is not a minor detail. It was the cause
+of the agent appearing to "only move forward."
+
+The fix is the Wayland-native backend in
+[`nitrogen/linux_capture_pipewire.py`](nitrogen/linux_capture_pipewire.py): it asks
+the xdg-desktop-portal ScreenCast API to share a source, then reads frames from the
+returned PipeWire node through GStreamer. `play_linux.py` and `smoke_test_linux.py`
+select it automatically on Wayland (`--capture auto`); force it with
+`--capture pipewire`.
+
+The first run shows a KDE "Select what to share" dialog. Pick the Cyberpunk
+window or the whole screen. The restore token is saved to
+`~/.config/nitrogen/screencast.token`, so later runs reuse the choice without
+asking. The smoke test asserts the captured frames are not black, so a blind run
+fails instead of passing.
+
+System packages for this backend (installed on the host, not via pip):
+
+```bash
+# Fedora/Bazzite host
+rpm-ostree install python3-gobject gstreamer1-plugins-base gstreamer1-plugin-pipewire
+# Debian/Ubuntu
+sudo apt install python3-gi gstreamer1.0-plugins-base gstreamer1.0-pipewire
+```
+
+The host play venv is created with `--system-site-packages` so it can use the
+system PyGObject/GStreamer.
 
 ### GPU server on Bazzite — composefs workaround
 
@@ -288,11 +317,11 @@ done and verified; unchecked = remaining.
 - [x] **Model server loads the checkpoint on the GPU** (needs `transformers<5` + `torchvision`, now pinned)
 - [x] Host play venv works — all backends import with real `cv2/numpy/mss/evdev/Xlib/zmq`
 - [x] **Live inference run on the RTX 3070** — `smoke_test_linux.py` PASSES end-to-end (capture → GPU inference → virtual pad). **~34 ms mean inference (~29/s)** at `--timesteps 2`, 18-action chunks; better than the old 62–85 ms baseline (TF32).
-- [x] `mss` capture + full `smoke_test_linux.py` pass (desktop region)
-- [ ] `mss` capture of the live **Cyberpunk** Proton window specifically
-- [ ] End-to-end: Cyberpunk running, agent self-playing via the virtual pad
-- [ ] Steam Input confirms the virtual pad and maps it in-game
-- [ ] Tune `--timesteps` / `--actions-per-step` / `--fps` for smooth control on this hardware
+- [x] **PipeWire capture of the live Cyberpunk window** — real frames confirmed (a saved 256x256 frame shows the game HUD and city; mean brightness and variance well above black)
+- [x] **End-to-end: Cyberpunk running, agent self-playing via the virtual pad** — the agent captures the game, runs GPU inference, and drives the pad. The model is reactive and a poor driver, which is a model limit, not a pipeline one.
+- [x] Steam Input maps the virtual pad in-game — Cyberpunk showed the Xbox 360 pad while the agent ran, and "controller disconnected" once it stopped
+- [ ] Driving quality — needs DAgger fine-tuning, not tuning (see below)
+- [ ] Tune `--timesteps` / `--actions-per-step` / `--fps` / `--max-throttle` to taste
 
 > GPU split chosen for this host: **both Cyberpunk and inference on the RTX 3070**
 > (all-CUDA; the Arc A770 can't run CUDA inference without an experimental IPEX/XPU

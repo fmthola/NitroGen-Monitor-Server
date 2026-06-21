@@ -28,6 +28,7 @@ LIVE HOTKEYS (need an X server + `pynput`):
   ALT+F7=Toggle RIGHT_TRIGGER ALT+F8=Toggle LEFT_TRIGGER
   ALT+F9=Toggle joystick sensitivity (50% / 100%)
 """
+import os
 import time
 import pickle
 import argparse
@@ -54,9 +55,18 @@ from nitrogen.shared import BUTTON_ACTION_TOKENS
 # =============================================================================
 # GAMEPLAY MODES - Block certain buttons to constrain AI behavior
 # =============================================================================
+# Every digital button on the pad. The "driving" mode blocks all of them, so
+# only the two sticks and the two triggers reach the game. That keeps the agent
+# from opening menus, swapping weapons, or leaving the car while it drives.
+ALL_BUTTONS = [
+    "SOUTH", "EAST", "WEST", "NORTH",
+    "LEFT_SHOULDER", "RIGHT_SHOULDER", "LEFT_THUMB", "RIGHT_THUMB",
+    "BACK", "START", "GUIDE",
+    "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT",
+]
 GAMEPLAY_MODES = {
     "none": [],
-    "driving": ["SOUTH", "NORTH", "WEST", "RIGHT_SHOULDER"],
+    "driving": ALL_BUTTONS,                 # sticks + triggers only
     "combat": ["BACK", "START"],
     "explore": ["RIGHT_TRIGGER", "LEFT_TRIGGER", "RIGHT_SHOULDER"],
 }
@@ -125,7 +135,18 @@ parser.add_argument("--actions-per-step", type=int, default=8,
                          "(1 = upstream behavior; the model predicts a 16-action chunk, so 8 halves "
                          "inference load and smooths control). Clamped to the chunk length.")
 parser.add_argument("--mode", type=str, default="none", choices=["none", "driving", "combat", "explore"])
+parser.add_argument("--max-throttle", type=float, default=1.0,
+                    help="Scale the accelerator (right trigger) from 0 to 1. Lower values drive "
+                         "slower, which gives the reactive model more time to steer and does less "
+                         "damage on contact. Try 0.35-0.5 for careful driving.")
+parser.add_argument("--capture", choices=["auto", "pipewire", "mss"], default="auto",
+                    help="Screen capture backend. 'auto' uses pipewire on Wayland (required: "
+                         "X11/mss capture returns black for XWayland games) and mss on X11. "
+                         "pipewire pops a one-time KDE picker; choose the game window.")
 args = parser.parse_args()
+
+use_pipewire = args.capture == "pipewire" or (
+    args.capture == "auto" and os.environ.get("XDG_SESSION_TYPE") == "wayland")
 
 set_mode(args.mode)
 setup_hotkeys()
@@ -146,19 +167,27 @@ gamepad = vg.VX360Gamepad()
 gamepad.update()
 print("Virtual controller ready!")
 
-# Resolve capture region: explicit --region wins, else locate the window.
-if args.region:
-    game_region = region_from_str(args.region)
-    print(f"Using explicit capture region: {game_region}")
+# Set up screen capture. On Wayland the X11/mss path returns black for XWayland
+# games, so use the PipeWire/portal backend there.
+if use_pipewire:
+    import nitrogen.linux_capture_pipewire as pwcap
+    print("Initializing screen capture (pipewire/portal)...")
+    print(">>> A KDE share picker will appear the first time. Pick the Cyberpunk window.")
+    camera = pwcap.create(output_color="RGB")
+    camera.start()
+    print("Screen capture ready - capturing the shared source via PipeWire!")
 else:
-    print(f"Looking for game window matching: {args.window_name}")
-    game_region = find_game_window(process_name=args.process, window_name=args.window_name)
-    print(f"Found window region: {game_region}")
-
-print("Initializing screen capture (mss)...")
-camera = dxcam.create(output_color="RGB", region=game_region)
-camera.start(target_fps=60, video_mode=True)
-print("Screen capture ready - capturing game window region!")
+    if args.region:
+        game_region = region_from_str(args.region)
+        print(f"Using explicit capture region: {game_region}")
+    else:
+        print(f"Looking for game window matching: {args.window_name}")
+        game_region = find_game_window(process_name=args.process, window_name=args.window_name)
+        print(f"Found window region: {game_region}")
+    print("Initializing screen capture (mss)...")
+    camera = dxcam.create(output_color="RGB", region=game_region)
+    camera.start(target_fps=60, video_mode=True)
+    print("Screen capture ready - capturing game window region!")
 
 BUTTON_MAP = {
     "SOUTH": vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
@@ -202,7 +231,7 @@ def apply_action(j_left, j_right, buttons):
     if lt_idx >= 0 and "LEFT_TRIGGER" not in current_blocked:
         gamepad.left_trigger(value=int(buttons[lt_idx] * 255))
     if rt_idx >= 0 and "RIGHT_TRIGGER" not in current_blocked:
-        gamepad.right_trigger(value=int(buttons[rt_idx] * 255))
+        gamepad.right_trigger(value=int(buttons[rt_idx] * 255 * args.max_throttle))
 
     for name, value in zip(TOKEN_SET, buttons):
         if name in ["START", "BACK", "GUIDE", "LEFT_TRIGGER", "RIGHT_TRIGGER"]:
@@ -216,7 +245,8 @@ def apply_action(j_left, j_right, buttons):
 
 
 print(f"\n{'='*60}")
-print(f"Starting AI control (window='{args.window_name}', region={game_region})")
+_src = "pipewire portal" if use_pipewire else f"region {region_from_str(args.region) if args.region else args.window_name}"
+print(f"Starting AI control (capture: {_src})")
 print(f"Target FPS: {args.fps} | Press Ctrl+C to stop")
 print(f"{'='*60}\n")
 
@@ -289,9 +319,8 @@ try:
                 lx, ly = j_left_seq[k]
                 rx, ry = j_right_seq[k]
                 pressed = [TOKEN_SET[i] for i, b in enumerate(buttons_seq[k]) if b > BUTTON_PRESS_THRES]
-                ctrl_fps = 1.0 / max(time.perf_counter() - act_start, 1e-6)
-                print(f"Step {step_count:5d} | ctrl~{ctrl_fps:5.1f}fps | Inf: {inference_time*1000:.0f}ms "
-                      f"(1/{n_play} chunk) | L:({lx:+.2f},{ly:+.2f}) R:({rx:+.2f},{ry:+.2f}) | Btns: {pressed}",
+                print(f"Step {step_count:5d} | target {args.fps}fps | Inf: {inference_time*1000:.0f}ms "
+                      f"(action {k+1}/{n_play} of chunk) | L:({lx:+.2f},{ly:+.2f}) R:({rx:+.2f},{ry:+.2f}) | Btns: {pressed}",
                       flush=True)
 
             step_count += 1
